@@ -191,7 +191,11 @@ Returns the chat buffer."
         (pilish--display-startup-header)))
     (with-current-buffer input-buf
       (setq default-directory dir)
-      (pilish--set-chat-buffer chat-buf))
+      (pilish--set-chat-buffer chat-buf)
+      ;; Restore widgets and title that may have arrived before this
+      ;; input buffer was linked to the chat buffer.
+      (pilish--extension-widgets-refresh)
+      (pilish--extension-title-refresh))
     chat-buf))
 
 (defun pilish--show-session-buffers (chat-buf input-buf)

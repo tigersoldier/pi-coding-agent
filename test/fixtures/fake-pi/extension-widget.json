@@ -1,0 +1,33 @@
+{
+  "description": "Fire-and-forget extension UI events: status, widgets, and title.",
+  "commands": [
+    {
+      "name": "test-widget",
+      "description": "Trigger fake extension widget events",
+      "source": "extension",
+      "sourceInfo": { "scope": "project", "path": "test-extension.ts" }
+    }
+  ],
+  "prompt": {
+    "type": "extension_ui",
+    "command_name": "/test-widget",
+    "events": [
+      { "method": "notify", "message": "Widgets incoming", "notifyType": "info" },
+      { "method": "setStatus", "statusKey": "fake-ext", "statusText": "widgets active" },
+      {
+        "method": "setWidget",
+        "widgetKey": "plan-todos",
+        "widgetLines": ["TODO one", "TODO two"],
+        "widgetPlacement": "aboveEditor"
+      },
+      {
+        "method": "setWidget",
+        "widgetKey": "subagents",
+        "widgetLines": ["worker: running"],
+        "widgetPlacement": "belowEditor"
+      },
+      { "method": "setTitle", "title": "Fake Widgets" }
+    ],
+    "message_text": "WIDGET OK"
+  }
+}

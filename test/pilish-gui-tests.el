@@ -560,6 +560,41 @@ rear-advance overlay before assistant text continues after the tool block."
       (pilish-gui-test-send "/test-confirm")
       (should (pilish-gui-test-chat-contains "CONFIRMED")))))
 
+(ert-deftest pilish-gui-test-extension-widget-displayed ()
+  "Fake extension setWidget/setTitle events render in the live session."
+  (pilish-gui-test-with-fresh-session
+    (:backend fake :fake-scenario "extension-widget")
+    (pilish-gui-test-send "/test-widget")
+    (should (pilish-gui-test-chat-contains "WIDGET OK"))
+    (let ((input-buf (plist-get pilish-gui-test--session :input-buffer))
+          (chat-buf (plist-get pilish-gui-test--session :chat-buffer)))
+      (with-current-buffer input-buf
+        (let ((above pilish--extension-widget-above-overlay)
+              (below pilish--extension-widget-below-overlay))
+          (should (overlayp above))
+          (should (equal (overlay-get above 'before-string)
+                         "TODO one\nTODO two\n"))
+          (should (overlayp below))
+          (should (equal (overlay-get below 'after-string)
+                         "worker: running\n"))))
+      (should (equal (buffer-local-value 'frame-title-format chat-buf)
+                     "Fake Widgets - %b")))))
+
+(ert-deftest pilish-gui-test-extension-editor-response-displayed ()
+  "Fake extension editor response triggers the displayed follow-up message."
+  (pilish-gui-test-with-fresh-session
+    (:backend fake :fake-scenario "extension-editor")
+    (let (seen-title seen-prefill)
+      (cl-letf (((symbol-function 'pilish--read-extension-editor)
+                 (lambda (title prefill)
+                   (setq seen-title title
+                         seen-prefill prefill)
+                   "edited value")))
+        (pilish-gui-test-send "/test-editor")
+        (should (equal seen-title "Edit notes"))
+        (should (equal seen-prefill "draft text"))
+        (should (pilish-gui-test-chat-contains "EDITOR VALUE"))))))
+
 ;;;; Tool Toggle Tests
 
 (ert-deftest pilish-gui-test-tool-toggle-expand-collapse-cycle ()

@@ -272,7 +272,12 @@ Required request methods for current test coverage:
 - `select`
 - `editor`
 - fire-and-forget methods the frontend already handles, especially
-  `notify`, `setStatus`, and `set_editor_text`
+  `notify`, `setStatus`, `setWidget`, `setTitle`, and `set_editor_text`
+
+The `extension_dialog` prompt kind drives one round-trip dialog; the
+`extension_ui` prompt kind emits a list of fire-and-forget events in order
+(optionally followed by one custom message) so the frontend can be exercised
+without waiting for a response.
 
 Required response shape:
 

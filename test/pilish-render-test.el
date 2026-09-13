@@ -2598,27 +2598,22 @@ See https://github.com/dnouri/pilish/issues/176."
         (let ((pilish--process t))
           (pilish--handle-extension-ui-request
            '(:type "extension_ui_request"
-             :id "req-widget-1"
-             :method "setWidget"
-             :widgetKey "my-ext"
-             :widgetLines ["Line 1"]))
+             :id "req-footer-1"
+             :method "setFooter"))
           (pilish--handle-extension-ui-request
            '(:type "extension_ui_request"
-             :id "req-widget-2"
-             :method "setWidget"
-             :widgetKey "my-ext"
-             :widgetLines ["Line 2"]))
+             :id "req-footer-2"
+             :method "setFooter"))
           (pilish--handle-extension-ui-request
            '(:type "extension_ui_request"
-             :id "req-title"
-             :method "setTitle"
-             :title "pi - project")))))
+             :id "req-header"
+             :method "setHeader")))))
     (should (= (length warnings-logged) 2))
-    (should (= 1 (cl-count-if (lambda (m) (string-match-p "setWidget" m))
+    (should (= 1 (cl-count-if (lambda (m) (string-match-p "setFooter" m))
                               warnings-logged)))
-    (should (= 1 (cl-count-if (lambda (m) (string-match-p "setTitle" m))
+    (should (= 1 (cl-count-if (lambda (m) (string-match-p "setHeader" m))
                               warnings-logged)))
-    ;; setWidget and setTitle are fire-and-forget RPC methods.
+    ;; Component factory methods are fire-and-forget.
     (should (null responses-sent))))
 
 (ert-deftest pilish-test-extension-ui-unsupported-warnings-are-buffer-local ()
@@ -2641,19 +2636,15 @@ See https://github.com/dnouri/pilish/issues/176."
               (let ((pilish--process t))
                 (pilish--handle-extension-ui-request
                  '(:type "extension_ui_request"
-                   :id "req-widget"
-                   :method "setWidget"
-                   :widgetKey "my-ext"
-                   :widgetLines ["Line 1"])))))
+                   :id "req-footer"
+                   :method "setFooter")))))
           (with-current-buffer buf-a
             (let ((pilish--process t))
               (pilish--handle-extension-ui-request
                '(:type "extension_ui_request"
-                 :id "req-widget-again"
-                 :method "setWidget"
-                 :widgetKey "my-ext"
-                 :widgetLines ["Line 2"]))))
-          (should (= 2 (cl-count-if (lambda (m) (string-match-p "setWidget" m))
+                 :id "req-footer-again"
+                 :method "setFooter"))))
+          (should (= 2 (cl-count-if (lambda (m) (string-match-p "setFooter" m))
                                     warnings-logged))))
       (when (buffer-live-p buf-a) (kill-buffer buf-a))
       (when (buffer-live-p buf-b) (kill-buffer buf-b)))))
@@ -2696,13 +2687,60 @@ See https://github.com/dnouri/pilish/issues/176."
         (should (equal (plist-get response-sent :id) "req-9"))
         (should (eq (plist-get response-sent :cancelled) t))))))
 
-(ert-deftest pilish-test-extension-ui-editor-cancels ()
-  "extension_ui_request editor method sends cancelled (not supported)."
+(ert-deftest pilish-test-extension-ui-editor-sends-value ()
+  "extension_ui_request editor method sends the edited value."
   (let ((response-sent nil))
     (cl-letf (((symbol-function 'pilish--send-extension-ui-response)
                (lambda (_proc msg)
                  (setq response-sent msg)))
-              ((symbol-function 'message) #'ignore))
+              ((symbol-function 'pilish--read-extension-editor)
+               (lambda (title prefill)
+                 (should (equal title "Edit:"))
+                 (should (equal prefill "some text"))
+                 "edited text")))
+      (with-temp-buffer
+        (pilish-chat-mode)
+        (let ((pilish--process t))
+          (pilish--handle-extension-ui-request
+           '(:type "extension_ui_request"
+             :id "req-10"
+             :method "editor"
+             :title "Edit:"
+             :prefill "some text")))
+        (should response-sent)
+        (should (equal (plist-get response-sent :type) "extension_ui_response"))
+        (should (equal (plist-get response-sent :id) "req-10"))
+        (should (equal (plist-get response-sent :value) "edited text"))
+        (should-not (plist-member response-sent :cancelled))))))
+
+(ert-deftest pilish-test-extension-ui-editor-sends-empty-value ()
+  "extension_ui_request editor method preserves an empty submission."
+  (let ((response-sent nil))
+    (cl-letf (((symbol-function 'pilish--send-extension-ui-response)
+               (lambda (_proc msg)
+                 (setq response-sent msg)))
+              ((symbol-function 'pilish--read-extension-editor)
+               (lambda (_title _prefill) "")))
+      (with-temp-buffer
+        (pilish-chat-mode)
+        (let ((pilish--process t))
+          (pilish--handle-extension-ui-request
+           '(:type "extension_ui_request"
+             :id "req-empty"
+             :method "editor"
+             :title "Edit:")))
+        (should response-sent)
+        (should (equal (plist-get response-sent :value) ""))
+        (should-not (plist-member response-sent :cancelled))))))
+
+(ert-deftest pilish-test-extension-ui-editor-cancels ()
+  "extension_ui_request editor method sends cancelled when the user cancels."
+  (let ((response-sent nil))
+    (cl-letf (((symbol-function 'pilish--send-extension-ui-response)
+               (lambda (_proc msg)
+                 (setq response-sent msg)))
+              ((symbol-function 'pilish--read-extension-editor)
+               (lambda (_title _prefill) nil)))
       (with-temp-buffer
         (pilish-chat-mode)
         (let ((pilish--process t))
@@ -2714,6 +2752,225 @@ See https://github.com/dnouri/pilish/issues/176."
              :prefill "some text")))
         (should response-sent)
         (should (eq (plist-get response-sent :cancelled) t))))))
+
+(ert-deftest pilish-test-extension-ui-editor-error-cancels ()
+  "extension_ui_request editor method cancels when the editor fails."
+  (let ((response-sent nil))
+    (cl-letf (((symbol-function 'pilish--send-extension-ui-response)
+               (lambda (_proc msg)
+                 (setq response-sent msg)))
+              ((symbol-function 'pilish--read-extension-editor)
+               (lambda (_title _prefill) (error "boom")))
+              ((symbol-function 'message) #'ignore))
+      (with-temp-buffer
+        (pilish-chat-mode)
+        (let ((pilish--process t))
+          (pilish--handle-extension-ui-request
+           '(:type "extension_ui_request"
+             :id "req-editor-error"
+             :method "editor"
+             :title "Edit:")))
+        (should response-sent)
+        (should (eq (plist-get response-sent :cancelled) t))))))
+
+(ert-deftest pilish-test-extension-ui-set-widget-above-editor ()
+  "extension_ui_request setWidget renders above-editor lines in the input."
+  (let ((input-buf (get-buffer-create "*pi-test-widget-input*")))
+    (unwind-protect
+        (with-temp-buffer
+          (pilish-chat-mode)
+          (let ((chat-buf (current-buffer)))
+            (with-current-buffer input-buf
+              (pilish-input-mode)
+              (pilish--set-chat-buffer chat-buf))
+            (setq pilish--input-buffer input-buf)
+            (pilish--handle-extension-ui-request
+             '(:type "extension_ui_request"
+               :id "req-widget"
+               :method "setWidget"
+               :widgetKey "plan-todos"
+               :widgetLines ["TODO one" "TODO two"]
+               :widgetPlacement "aboveEditor"))
+            (should (equal (plist-get (car pilish--extension-widgets) :key)
+                           "plan-todos"))
+            (should (equal (plist-get (car pilish--extension-widgets) :placement)
+                           "aboveEditor"))
+            (with-current-buffer input-buf
+              (let ((overlay pilish--extension-widget-above-overlay))
+                (should (overlayp overlay))
+                (should (equal (overlay-get overlay 'before-string)
+                               "TODO one\nTODO two\n"))
+                (should (= (overlay-start overlay) (point-min)))
+                (should (overlay-get overlay
+                                     'pilish-extension-widget))
+                (should-not pilish--extension-widget-below-overlay)))))
+      (when (buffer-live-p input-buf) (kill-buffer input-buf)))))
+
+(ert-deftest pilish-test-extension-ui-set-widget-below-editor-tracks-point-max ()
+  "Below-editor widgets stay at the end of the input buffer."
+  (let ((input-buf (get-buffer-create "*pi-test-widget-below*")))
+    (unwind-protect
+        (with-temp-buffer
+          (pilish-chat-mode)
+          (let ((chat-buf (current-buffer)))
+            (with-current-buffer input-buf
+              (pilish-input-mode)
+              (pilish--set-chat-buffer chat-buf))
+            (setq pilish--input-buffer input-buf)
+            (pilish--handle-extension-ui-request
+             '(:type "extension_ui_request"
+               :id "req-widget"
+               :method "setWidget"
+               :widgetKey "subagents"
+               :widgetLines ["worker: running"]
+               :widgetPlacement "belowEditor"))
+            (with-current-buffer input-buf
+              (let ((overlay pilish--extension-widget-below-overlay))
+                (should (overlayp overlay))
+                (should (equal (overlay-get overlay 'after-string)
+                               "worker: running\n")))
+              (insert "typed text")
+              (should (= (overlay-end pilish--extension-widget-below-overlay)
+                         (point-max)))
+              (should (equal (overlay-get pilish--extension-widget-below-overlay
+                                          'after-string)
+                             "worker: running\n")))))
+      (when (buffer-live-p input-buf) (kill-buffer input-buf)))))
+
+(ert-deftest pilish-test-extension-ui-set-widget-clears ()
+  "extension_ui_request setWidget without lines removes the widget."
+  (let ((input-buf (get-buffer-create "*pi-test-widget-clear*")))
+    (unwind-protect
+        (with-temp-buffer
+          (pilish-chat-mode)
+          (let ((chat-buf (current-buffer)))
+            (with-current-buffer input-buf
+              (pilish-input-mode)
+              (pilish--set-chat-buffer chat-buf))
+            (setq pilish--input-buffer input-buf)
+            (pilish--handle-extension-ui-request
+             '(:type "extension_ui_request"
+               :id "req-widget"
+               :method "setWidget"
+               :widgetKey "plan-todos"
+               :widgetLines ["TODO one"]))
+            (pilish--handle-extension-ui-request
+             '(:type "extension_ui_request"
+               :id "req-widget-clear"
+               :method "setWidget"
+               :widgetKey "plan-todos"
+               :widgetLines nil))
+            (should-not pilish--extension-widgets)
+            (with-current-buffer input-buf
+              (should-not pilish--extension-widget-above-overlay))
+            ;; JSON null also clears the widget.
+            (pilish--handle-extension-ui-request
+             '(:type "extension_ui_request"
+               :id "req-widget-again"
+               :method "setWidget"
+               :widgetKey "plan-todos"
+               :widgetLines ["TODO one"]))
+            (should pilish--extension-widgets)
+            (pilish--handle-extension-ui-request
+             '(:type "extension_ui_request"
+               :id "req-widget-null"
+               :method "setWidget"
+               :widgetKey "plan-todos"
+               :widgetLines :null))
+            (should-not pilish--extension-widgets)))
+      (when (buffer-live-p input-buf) (kill-buffer input-buf)))))
+
+(ert-deftest pilish-test-extension-ui-set-widget-truncates ()
+  "extension_ui_request setWidget truncates long widgets with a notice."
+  (let ((pilish-extension-widget-max-lines 2)
+        (input-buf (get-buffer-create "*pi-test-widget-truncate*")))
+    (unwind-protect
+        (with-temp-buffer
+          (pilish-chat-mode)
+          (let ((chat-buf (current-buffer)))
+            (with-current-buffer input-buf
+              (pilish-input-mode)
+              (pilish--set-chat-buffer chat-buf))
+            (setq pilish--input-buffer input-buf)
+            (pilish--handle-extension-ui-request
+             '(:type "extension_ui_request"
+               :id "req-widget"
+               :method "setWidget"
+               :widgetKey "long"
+               :widgetLines ["one" "two" "three"]))
+            (let ((lines (plist-get (car pilish--extension-widgets) :lines)))
+              (should (= (length lines) 3))
+              (should (equal (nth 0 lines) "one"))
+              (should (equal (nth 1 lines) "two"))
+              (should (equal (substring-no-properties (nth 2 lines))
+                             "… (widget truncated)")))))
+      (when (buffer-live-p input-buf) (kill-buffer input-buf)))))
+
+(ert-deftest pilish-test-extension-ui-set-widget-preserves-ansi ()
+  "extension_ui_request setWidget keeps ANSI colors as text properties."
+  (let ((input-buf (get-buffer-create "*pi-test-widget-ansi*")))
+    (unwind-protect
+        (with-temp-buffer
+          (pilish-chat-mode)
+          (let ((chat-buf (current-buffer)))
+            (with-current-buffer input-buf
+              (pilish-input-mode)
+              (pilish--set-chat-buffer chat-buf))
+            (setq pilish--input-buffer input-buf)
+            (pilish--handle-extension-ui-request
+             '(:type "extension_ui_request"
+               :id "req-widget"
+               :method "setWidget"
+               :widgetKey "colored"
+               :widgetLines ["\e[31mred\e[0m"]))
+            (let ((line (car (plist-get (car pilish--extension-widgets) :lines))))
+              (should (equal (substring-no-properties line) "red"))
+              (should (get-text-property 0 'font-lock-face line))
+              (should (get-text-property 0 'face line)))))
+      (when (buffer-live-p input-buf) (kill-buffer input-buf)))))
+
+(ert-deftest pilish-test-extension-ui-set-title ()
+  "extension_ui_request setTitle sets a buffer-local frame title."
+  (let ((input-buf (get-buffer-create "*pi-test-title-input*")))
+    (unwind-protect
+        (with-temp-buffer
+          (pilish-chat-mode)
+          (let ((chat-buf (current-buffer)))
+            (with-current-buffer input-buf
+              (pilish-input-mode)
+              (pilish--set-chat-buffer chat-buf))
+            (setq pilish--input-buffer input-buf)
+            (pilish--handle-extension-ui-request
+             '(:type "extension_ui_request"
+               :id "req-title"
+               :method "setTitle"
+               :title "Plan 100%"))
+            (should (equal pilish--extension-title "Plan 100%"))
+            (should (equal (buffer-local-value 'frame-title-format chat-buf)
+                           "Plan 100%% - %b"))
+            (should (equal (buffer-local-value 'frame-title-format input-buf)
+                           "Plan 100%% - %b"))
+            (pilish--handle-extension-ui-request
+             '(:type "extension_ui_request"
+               :id "req-title-clear"
+               :method "setTitle"
+               :title ""))
+            (should-not pilish--extension-title)
+            (should-not (local-variable-p 'frame-title-format chat-buf))
+            (should-not (local-variable-p 'frame-title-format input-buf))))
+      (when (buffer-live-p input-buf) (kill-buffer input-buf)))))
+
+(ert-deftest pilish-test-extension-ui-set-title-escapes-percent ()
+  "extension_ui_request setTitle escapes percent signs for the title format."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (pilish--handle-extension-ui-request
+     '(:type "extension_ui_request"
+       :id "req-title"
+       :method "setTitle"
+       :title "100% done"))
+    (should (equal (buffer-local-value 'frame-title-format (current-buffer))
+                   "100%% done - %b"))))
 
 ;;; Pretty-Print JSON Helper
 

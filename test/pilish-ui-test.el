@@ -1469,6 +1469,83 @@ Buffer is read-only with `inhibit-read-only' used for insertion.
                                        'mouse-face header)
                     'highlight))))))
 
+;;;; Extension Editor Mode
+
+(ert-deftest pilish-test-extension-editor-submit-sets-result ()
+  "Submitting the extension editor stores the buffer text."
+  (with-temp-buffer
+    (pilish-extension-editor-mode)
+    (insert "hello editor")
+    (cl-letf (((symbol-function 'exit-recursive-edit) #'ignore))
+      (pilish-extension-editor-submit))
+    (should (equal pilish--extension-editor-result "hello editor"))
+    (should pilish--extension-editor-finished)
+    (should-not pilish--extension-editor-cancelled)))
+
+(ert-deftest pilish-test-extension-editor-cancel-sets-cancelled ()
+  "Cancelling the extension editor records cancellation."
+  (with-temp-buffer
+    (pilish-extension-editor-mode)
+    (insert "discard me")
+    (cl-letf (((symbol-function 'exit-recursive-edit) #'ignore))
+      (pilish-extension-editor-cancel))
+    (should-not pilish--extension-editor-result)
+    (should pilish--extension-editor-finished)
+    (should pilish--extension-editor-cancelled)))
+
+(ert-deftest pilish-test-extension-editor-mode-keybindings ()
+  "The extension editor binds submit and cancel keys."
+  (with-temp-buffer
+    (pilish-extension-editor-mode)
+    (should (eq (key-binding (kbd "C-c C-c"))
+                #'pilish-extension-editor-submit))
+    (should (eq (key-binding (kbd "C-c C-k"))
+                #'pilish-extension-editor-cancel))))
+
+(ert-deftest pilish-test-extension-editor-header-line ()
+  "The extension editor header line shows the title and key hints."
+  (with-temp-buffer
+    (pilish-extension-editor-mode)
+    (setq pilish--extension-editor-title "Plan 100%")
+    (let ((header (pilish--extension-editor-header-line)))
+      (should (string-match-p "Plan 100%%" header))
+      (should (string-match-p "C-c C-c" header))
+      (should (string-match-p "C-c C-k" header)))))
+
+(ert-deftest pilish-test-read-extension-editor-submits ()
+  "Reading from the extension editor returns submitted text."
+  (cl-letf (((symbol-function 'recursive-edit)
+             (lambda () (pilish-extension-editor-submit)))
+            ((symbol-function 'exit-recursive-edit) #'ignore)
+            ((symbol-function 'message) #'ignore))
+    (should (equal (pilish--read-extension-editor "Title" "prefill")
+                   "prefill"))))
+
+(ert-deftest pilish-test-read-extension-editor-cancels ()
+  "Reading from the extension editor returns nil on cancel."
+  (cl-letf (((symbol-function 'recursive-edit)
+             (lambda () (pilish-extension-editor-cancel)))
+            ((symbol-function 'exit-recursive-edit) #'ignore)
+            ((symbol-function 'message) #'ignore))
+    (should-not (pilish--read-extension-editor "Title" "prefill"))))
+
+(ert-deftest pilish-test-read-extension-editor-empty-submit ()
+  "Reading from the extension editor preserves an empty submission."
+  (cl-letf (((symbol-function 'recursive-edit)
+             (lambda () (pilish-extension-editor-submit)))
+            ((symbol-function 'exit-recursive-edit) #'ignore)
+            ((symbol-function 'message) #'ignore))
+    (should (equal (pilish--read-extension-editor "Title" nil) ""))))
+
+(ert-deftest pilish-test-extension-widgets-refresh-without-input-buffer ()
+  "Refreshing widgets without a linked input buffer is a no-op."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (setq pilish--extension-widgets
+          (list (list :key "ext" :placement "aboveEditor" :lines '("line"))))
+    (should-not (pilish--extension-widgets-refresh))
+    (should (equal (plist-get (car pilish--extension-widgets) :key) "ext"))))
+
 (ert-deftest pilish-test-kill-ring-save-strips-by-default ()
   "kill-ring-save strips hidden markup by default."
   (pilish-test--with-chat-markup "Hello **bold** world"

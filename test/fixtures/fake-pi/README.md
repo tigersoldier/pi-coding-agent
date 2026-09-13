@@ -59,6 +59,29 @@ Example:
 }
 ```
 
+## `extension_ui`
+
+Emits a list of fire-and-forget `extension_ui_request` events in order, then an
+optional custom message.  Each event is merged into a fresh request envelope,
+so scenarios can exercise `notify`, `setStatus`, `setWidget`, and `setTitle`
+without a response round-trip.  See `extension-widget.json`.
+
+Example:
+
+```json
+{
+  "prompt": {
+    "type": "extension_ui",
+    "command_name": "/test-widget",
+    "events": [
+      { "method": "setStatus", "statusKey": "fake-ext", "statusText": "busy" },
+      { "method": "setWidget", "widgetKey": "todos", "widgetLines": ["one"] }
+    ],
+    "message_text": "WIDGET OK"
+  }
+}
+```
+
 ## `custom_message`
 
 A slash-command scenario that optionally emits one visible custom message

@@ -276,6 +276,14 @@ For example:
                                             :value-type sexp)))
   :group 'pilish)
 
+(defcustom pilish-extension-widget-max-lines 10
+  "Maximum number of lines rendered per extension widget.
+Extension `setWidget' requests with more lines are truncated with a
+notice, matching Pi's TUI.  Set to nil to render every line."
+  :type '(choice (integer :tag "Maximum lines")
+                 (const :tag "No limit" nil))
+  :group 'pilish)
+
 (defcustom pilish-quit-without-confirmation nil
   "Whether quitting skips confirmation for a live process.
 When non-nil, closing a session never asks whether a running pi process
@@ -396,6 +404,12 @@ Background is derived from the current theme so syntax faces stay visible."
 (defface pilish-error-notice
   '((t :inherit error))
   "Face for error notifications from the server."
+  :group 'pilish)
+
+(defface pilish-extension-widget
+  '((t :inherit shadow))
+  "Face for extension widget lines shown around the input.
+ANSI colors from the extension take precedence over this face."
   :group 'pilish)
 
 ;;;; Dynamic Face Computation
@@ -941,6 +955,101 @@ removing the instructional header that would otherwise appear."
     (define-key map (kbd "C-c C-s") #'pilish-queue-steering)
     map)
   "Keymap for `pilish-input-mode'.")
+
+;;;; Extension Editor
+
+(defvar pilish-extension-editor-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map text-mode-map)
+    (define-key map (kbd "C-c C-c") #'pilish-extension-editor-submit)
+    (define-key map (kbd "C-c C-k") #'pilish-extension-editor-cancel)
+    map)
+  "Keymap for `pilish-extension-editor-mode'.")
+
+(defvar-local pilish--extension-editor-title nil
+  "Title shown in the extension editor header line.")
+
+(defvar-local pilish--extension-editor-result nil
+  "Text submitted from the extension editor, or nil.")
+
+(defvar-local pilish--extension-editor-cancelled nil
+  "Non-nil when the extension editor session was cancelled.")
+
+(defvar-local pilish--extension-editor-finished nil
+  "Non-nil once the extension editor session has ended.")
+
+(define-derived-mode pilish-extension-editor-mode text-mode "Pi-Editor"
+  "Major mode for editing multi-line text requested by an extension.
+Submit with \\[pilish-extension-editor-submit] and cancel with
+\\[pilish-extension-editor-cancel]."
+  :group 'pilish
+  (setq-local header-line-format
+              '(:eval (pilish--extension-editor-header-line)))
+  (setq-local truncate-lines nil)
+  (setq-local word-wrap t))
+
+(defun pilish--extension-editor-header-line ()
+  "Return the header line for an extension editor buffer."
+  (let ((title (or pilish--extension-editor-title "Editor")))
+    (concat (propertize (replace-regexp-in-string "%" "%%" title t t)
+                        'face 'bold)
+            (propertize "  —  C-c C-c submit · C-c C-k cancel"
+                        'face 'shadow))))
+
+(defun pilish-extension-editor-submit ()
+  "Submit the extension editor contents.
+An empty submission is sent as an empty string, matching Pi's TUI."
+  (interactive)
+  (setq pilish--extension-editor-result (buffer-string)
+        pilish--extension-editor-cancelled nil
+        pilish--extension-editor-finished t)
+  (exit-recursive-edit))
+
+(defun pilish-extension-editor-cancel ()
+  "Cancel the extension editor session."
+  (interactive)
+  (setq pilish--extension-editor-result nil
+        pilish--extension-editor-cancelled t
+        pilish--extension-editor-finished t)
+  (exit-recursive-edit))
+
+(defun pilish--read-extension-editor (title prefill)
+  "Read multi-line text for TITLE prefilled with PREFILL.
+Return the submitted string, possibly empty, or nil when the user
+cancels.  Opens a temporary buffer and waits in a recursive edit, which
+works in both graphical and terminal Emacs."
+  (let* ((buffer-name (format "*pilish-editor:%s*"
+                              (replace-regexp-in-string
+                               "[\n\r]+" " " (or title "Editor"))))
+         ;; Unique name: a second request can arrive while the first editor
+         ;; is open, and it must not erase the buffer being edited.
+         (buffer (generate-new-buffer buffer-name))
+         (config (current-window-configuration))
+         (result nil))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (erase-buffer)
+            (when (and (stringp prefill) (not (string-empty-p prefill)))
+              (insert prefill))
+            (pilish-extension-editor-mode)
+            (setq pilish--extension-editor-title title
+                  pilish--extension-editor-result nil
+                  pilish--extension-editor-cancelled nil
+                  pilish--extension-editor-finished nil)
+            (goto-char (point-min)))
+          (pop-to-buffer buffer)
+          (message "Pi: C-c C-c to submit, C-c C-k to cancel")
+          (recursive-edit)
+          (with-current-buffer buffer
+            (when (and pilish--extension-editor-finished
+                       (not pilish--extension-editor-cancelled))
+              (setq result pilish--extension-editor-result))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (when (window-configuration-p config)
+        (ignore-errors (set-window-configuration config))))
+    result))
 
 ;;;; Session Directory Detection
 
@@ -1651,6 +1760,131 @@ Return non-nil when METHOD had not already been warned for this pi session."
 (defun pilish--clear-unsupported-extension-ui-warnings ()
   "Forget unsupported extension UI warnings for the current pi session."
   (setq pilish--unsupported-extension-ui-methods-warned nil))
+
+(defvar-local pilish--extension-widgets nil
+  "Ordered extension widgets for the current session.
+Each element is a plist with :key (string), :placement (either
+\"aboveEditor\" or \"belowEditor\"), and :lines (list of display strings).")
+
+(defvar-local pilish--extension-widget-above-overlay nil
+  "Overlay showing above-editor widgets in the input buffer.")
+
+(defvar-local pilish--extension-widget-below-overlay nil
+  "Overlay showing below-editor widgets in the input buffer.")
+
+(defvar-local pilish--extension-title nil
+  "Extension-provided frame title for this session, or nil.")
+
+(defun pilish--extension-widget-string (widgets placement)
+  "Return the display string for WIDGETS matching PLACEMENT.
+Returns nil when WIDGETS has no matching lines."
+  (let (lines)
+    (dolist (widget widgets)
+      (when (equal (plist-get widget :placement) placement)
+        (setq lines (append lines (plist-get widget :lines)))))
+    (when lines
+      (concat (mapconcat #'identity lines "\n") "\n"))))
+
+(defun pilish--extension-widget-set-overlay
+    (overlay-var position property string)
+  "Display STRING with PROPERTY at POSITION using OVERLAY-VAR.
+Remove the overlay when STRING is nil."
+  (let ((overlay (symbol-value overlay-var)))
+    (if (null string)
+        (progn
+          (when (overlayp overlay)
+            (delete-overlay overlay))
+          (set overlay-var nil))
+      (unless (overlayp overlay)
+        (setq overlay (make-overlay position position))
+        (set overlay-var overlay))
+      (move-overlay overlay position position)
+      (overlay-put overlay property string)
+      (overlay-put overlay 'pilish-extension-widget t)
+      overlay)))
+
+(defun pilish--extension-widgets-apply (widgets)
+  "Render WIDGETS as overlays in the current input buffer."
+  (pilish--extension-widget-set-overlay
+   'pilish--extension-widget-above-overlay
+   (point-min) 'before-string
+   (pilish--extension-widget-string widgets "aboveEditor"))
+  (pilish--extension-widget-set-overlay
+   'pilish--extension-widget-below-overlay
+   (point-max) 'after-string
+   (pilish--extension-widget-string widgets "belowEditor")))
+
+(defun pilish--extension-widgets-after-change (&rest _ignored)
+  "Keep the below-editor widget overlay at the end of the input buffer.
+Intended for `after-change-functions' so the widget stays below the
+text the user types."
+  (let ((overlay pilish--extension-widget-below-overlay))
+    (when (and (overlayp overlay)
+               (/= (overlay-end overlay) (point-max)))
+      (move-overlay overlay (point-max) (point-max)))))
+
+(defun pilish--extension-widgets-refresh ()
+  "Refresh extension widget overlays in the linked input buffer.
+Call from the chat buffer, or from the input buffer via its link."
+  (let* ((chat-buf (if (derived-mode-p 'pilish-chat-mode)
+                       (current-buffer)
+                     (and (bound-and-true-p pilish--chat-buffer)
+                          pilish--chat-buffer)))
+         (input-buf (and (buffer-live-p chat-buf)
+                         (buffer-local-value 'pilish--input-buffer
+                                             chat-buf)))
+         (widgets (and (buffer-live-p chat-buf)
+                       (buffer-local-value 'pilish--extension-widgets
+                                           chat-buf))))
+    (when (buffer-live-p input-buf)
+      (with-current-buffer input-buf
+        (pilish--extension-widgets-apply widgets)))))
+
+(defun pilish--set-extension-widgets (widgets)
+  "Set extension WIDGETS for the current session and refresh display."
+  (setq pilish--extension-widgets widgets)
+  (pilish--extension-widgets-refresh))
+
+(defun pilish--clear-extension-widgets ()
+  "Remove all extension widgets for the current session."
+  (pilish--set-extension-widgets nil))
+
+(defun pilish--extension-title-refresh ()
+  "Apply the session's extension title to the chat and input buffers.
+The title is applied through a buffer-local `frame-title-format', which
+changes the frame title bar in graphical Emacs and the terminal title
+when `xterm-set-window-title' is enabled."
+  (let* ((chat-buf (if (derived-mode-p 'pilish-chat-mode)
+                       (current-buffer)
+                     (and (bound-and-true-p pilish--chat-buffer)
+                          pilish--chat-buffer)))
+         (title (and (buffer-live-p chat-buf)
+                     (buffer-local-value 'pilish--extension-title
+                                         chat-buf)))
+         (input-buf (and (buffer-live-p chat-buf)
+                         (buffer-local-value 'pilish--input-buffer
+                                             chat-buf)))
+         (format (when (and (stringp title) (not (string-empty-p title)))
+                   (concat (replace-regexp-in-string "%" "%%" title t t)
+                           " - %b"))))
+    (dolist (buffer (delq nil (list chat-buf input-buf)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (if format
+              (setq-local frame-title-format format)
+            (kill-local-variable 'frame-title-format)))))
+    (force-mode-line-update t)))
+
+(defun pilish--set-extension-title (title)
+  "Set the extension frame TITLE for the current session.
+TITLE nil or empty clears the override."
+  (setq pilish--extension-title
+        (and (stringp title) (not (string-empty-p title)) title))
+  (pilish--extension-title-refresh))
+
+(defun pilish--clear-extension-title ()
+  "Clear the extension frame title for the current session."
+  (pilish--set-extension-title nil))
 
 (defvar-local pilish--session-name nil
   "Cached session name for header-line display.

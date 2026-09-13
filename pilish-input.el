@@ -257,6 +257,9 @@ markup visibility, mode identity, and keybindings.  Set
   (add-hook 'completion-at-point-functions #'pilish--file-reference-capf nil t)
   (add-hook 'completion-at-point-functions #'pilish--path-capf nil t)
   (add-hook 'post-self-insert-hook #'pilish--maybe-complete-at nil t)
+  ;; Keep below-editor extension widgets below the text the user types.
+  (add-hook 'after-change-functions
+            #'pilish--extension-widgets-after-change nil t)
   (add-hook 'isearch-mode-hook #'pilish--history-isearch-setup nil t)
   (add-hook 'kill-buffer-query-functions
             #'pilish--input-kill-buffer-query nil t)

@@ -1812,5 +1812,100 @@ SPEC is (SESSION SCENARIO &rest EXTRA-ARGS)."
                           events)))
         (should custom-end)))))
 
+(ert-deftest pilish-fake-pi-test-extension-widget-events ()
+  "extension_ui scenario emits fire-and-forget status, widget, and title events."
+  (pilish-fake-pi-test-with-process (proc "extension-widget")
+    (pilish-fake-pi-test--send proc '(:type "prompt" :message "/test-widget"))
+    (should (equal (plist-get (pilish-fake-pi-test--pop-object proc) :command)
+                   "prompt"))
+    (should (equal (plist-get (pilish-fake-pi-test--pop-object proc) :type)
+                   "agent_start"))
+    (let* ((events (pilish-fake-pi-test--collect-until
+                    proc
+                    (lambda (obj) (equal (plist-get obj :type) "agent_end"))))
+           (requests (seq-filter
+                      (lambda (obj)
+                        (equal (plist-get obj :type) "extension_ui_request"))
+                      events))
+           (methods (mapcar (lambda (obj) (plist-get obj :method)) requests))
+           (widgets (seq-filter
+                     (lambda (obj) (equal (plist-get obj :method) "setWidget"))
+                     requests))
+           (custom (seq-find
+                    (lambda (obj)
+                      (and (equal (plist-get obj :type) "message_end")
+                           (equal (plist-get (plist-get obj :message) :content)
+                                  "WIDGET OK")))
+                    events)))
+      (should (equal methods '("notify" "setStatus" "setWidget" "setWidget"
+                               "setTitle")))
+      (should (equal (plist-get (nth 0 widgets) :widgetKey) "plan-todos"))
+      (should (equal (append (plist-get (nth 0 widgets) :widgetLines) nil)
+                     '("TODO one" "TODO two")))
+      (should (equal (plist-get (nth 0 widgets) :widgetPlacement) "aboveEditor"))
+      (should (equal (plist-get (nth 1 widgets) :widgetKey) "subagents"))
+      (should (equal (plist-get (nth 1 widgets) :widgetPlacement) "belowEditor"))
+      (should (equal (plist-get (seq-find
+                                 (lambda (obj)
+                                   (equal (plist-get obj :method) "setTitle"))
+                                 requests)
+                                :title)
+                     "Fake Widgets"))
+      (should custom))))
+
+(ert-deftest pilish-fake-pi-test-extension-editor-round-trip ()
+  "Extension editor scenario forwards prefill and returns submitted value."
+  (pilish-fake-pi-test-with-process (proc "extension-editor")
+    (pilish-fake-pi-test--send proc '(:type "prompt" :message "/test-editor"))
+    (should (equal (plist-get (pilish-fake-pi-test--pop-object proc) :command)
+                   "prompt"))
+    (should (equal (plist-get (pilish-fake-pi-test--pop-object proc) :type)
+                   "agent_start"))
+    (let ((request (pilish-fake-pi-test--pop-object proc)))
+      (should (equal (plist-get request :type) "extension_ui_request"))
+      (should (equal (plist-get request :method) "editor"))
+      (should (equal (plist-get request :title) "Edit notes"))
+      (should (equal (plist-get request :prefill) "draft text"))
+      (pilish-fake-pi-test--send
+       proc
+       (list :type "extension_ui_response"
+             :id (plist-get request :id)
+             :value "edited value"))
+      (let* ((events (pilish-fake-pi-test--collect-until
+                      proc
+                      (lambda (obj) (equal (plist-get obj :type) "agent_end"))))
+             (custom-end (seq-find
+                          (lambda (obj)
+                            (and (equal (plist-get obj :type) "message_end")
+                                 (equal (plist-get (plist-get obj :message) :content)
+                                        "EDITOR VALUE")))
+                          events)))
+        (should custom-end)))))
+
+(ert-deftest pilish-fake-pi-test-extension-editor-cancel ()
+  "Extension editor scenario reports cancellation."
+  (pilish-fake-pi-test-with-process (proc "extension-editor")
+    (pilish-fake-pi-test--send proc '(:type "prompt" :message "/test-editor"))
+    (should (equal (plist-get (pilish-fake-pi-test--pop-object proc) :command)
+                   "prompt"))
+    (should (equal (plist-get (pilish-fake-pi-test--pop-object proc) :type)
+                   "agent_start"))
+    (let ((request (pilish-fake-pi-test--pop-object proc)))
+      (pilish-fake-pi-test--send
+       proc
+       (list :type "extension_ui_response"
+             :id (plist-get request :id)
+             :cancelled t))
+      (let* ((events (pilish-fake-pi-test--collect-until
+                      proc
+                      (lambda (obj) (equal (plist-get obj :type) "agent_end"))))
+             (custom-end (seq-find
+                          (lambda (obj)
+                            (and (equal (plist-get obj :type) "message_end")
+                                 (equal (plist-get (plist-get obj :message) :content)
+                                        "EDITOR CANCELLED")))
+                          events)))
+        (should custom-end)))))
+
 (provide 'pilish-fake-pi-test)
 ;;; pilish-fake-pi-test.el ends here
