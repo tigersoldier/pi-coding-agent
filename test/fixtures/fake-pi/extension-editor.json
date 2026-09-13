@@ -1,0 +1,23 @@
+{
+  "description": "Extension editor dialog round-trip with prefill.",
+  "commands": [
+    {
+      "name": "test-editor",
+      "description": "Trigger fake extension editor",
+      "source": "extension",
+      "sourceInfo": { "scope": "project", "path": "test-extension.ts" }
+    }
+  ],
+  "prompt": {
+    "type": "extension_dialog",
+    "command_name": "/test-editor",
+    "method": "editor",
+    "title": "Edit notes",
+    "prefill": "draft text",
+    "response_messages": {
+      "value": "EDITOR VALUE",
+      "cancelled": "EDITOR CANCELLED",
+      "timeout": "EDITOR TIMEOUT"
+    }
+  }
+}

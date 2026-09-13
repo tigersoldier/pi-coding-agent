@@ -76,6 +76,9 @@
           pilish--aborted t
           pilish--extension-status '(("ext1" . "status"))
           pilish--working-message "Reading README..."
+          pilish--extension-widgets
+          (list (list :key "ext1" :placement "aboveEditor" :lines '("line")))
+          pilish--extension-title "My Extension Title"
           pilish--unsupported-extension-ui-methods-warned '("setWidget")
           pilish--message-start-marker (point-marker)
           pilish--streaming-marker (point-marker)
@@ -103,6 +106,8 @@
     (should (null pilish--aborted))
     (should (null pilish--extension-status))
     (should (null pilish--working-message))
+    (should (null pilish--extension-widgets))
+    (should (null pilish--extension-title))
     (should (null pilish--unsupported-extension-ui-methods-warned))
     (should (null pilish--message-start-marker))
     (should (null pilish--streaming-marker))
