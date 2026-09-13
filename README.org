@@ -744,18 +744,29 @@ C-p e=) or run =/export=.
 
 ** Extension support 🧩
 
-Pilish has basic support for Pi
-extensions.  Extension commands show up in slash completion and the
-transient menu, extension tools run normally, and extensions can use
-notifications, confirm/select/input prompts, prefill the input buffer,
-and show status text.
+Pilish supports the data-driven Pi extension UI surface.  Extension
+commands show up in slash completion and the transient menu, extension
+tools run normally, and extensions can use:
 
-Rich TUI-specific extension UI is not supported in Emacs yet: custom
-widgets, custom editor components, custom headers/footers, and other
-component-based views are unavailable or fall back.  Hover extension
-status text in the header line to see the exact =statusKey=, which you
-can use to change the font for that extension's status text using
-=pilish-extension-status-faces=.
+- notifications (=notify=) and status text (=setStatus=),
+- confirm/select/input dialogs and the multi-line =editor= dialog,
+  which opens a temporary buffer you submit with =C-c C-c= or cancel
+  with =C-c C-k=,
+- prefill the input buffer (=set_editor_text=),
+- string-array widgets (=setWidget=), rendered above or below the input
+  as read-only overlays (ANSI colors are preserved), and
+- window titles (=setTitle=), applied to the frame title bar in
+  graphical Emacs and to the terminal title when
+  =xterm-set-window-title= is enabled.
+
+Component-based TUI views cannot be serialized over JSON RPC and are
+still unavailable: =ctx.ui.custom()=, component widgets, custom
+headers/footers, and custom editor components fall back or are
+ignored.  Hover extension status text in the header line to see the
+exact =statusKey=, which you can use to change the font for that
+extension's status text using =pilish-extension-status-faces=.
+Use =pilish-extension-widget-max-lines= to bound how many widget lines
+are shown.
 
 ** Tree-sitter grammar management 🌳
 

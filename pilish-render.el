@@ -1196,9 +1196,85 @@ Include optional STDERR in a text fence and optional DETAIL before it."
     (setq pilish--working-message msg)
     (force-mode-line-update t)))
 
+(defun pilish--extension-widget-sanitize-lines (lines)
+  "Return display-ready widget lines from LINES.
+LINES is a JSON array vector.  ANSI colors are preserved, and widgets
+longer than `pilish-extension-widget-max-lines' are truncated
+with a notice."
+  (let* ((raw (append lines nil))
+         (max pilish-extension-widget-max-lines)
+         (sanitized
+          (mapcar (lambda (line)
+                    (let ((text (ansi-color-apply
+                                 (pilish--render-safe-string line))))
+                      (when (> (length text) 0)
+                        (add-face-text-property
+                         0 (length text)
+                         'pilish-extension-widget t text))
+                      text))
+                  raw)))
+    (if (and (integerp max) (>= max 0) (> (length sanitized) max))
+        (append (cl-subseq sanitized 0 max)
+                (list (propertize "… (widget truncated)"
+                                  'face 'pilish-extension-widget)))
+      sanitized)))
+
+(defun pilish--extension-ui-set-widget (event)
+  "Handle setWidget method from EVENT.
+An absent or null `widgetLines' value removes the widget for its key."
+  (let* ((key (plist-get event :widgetKey))
+         (placement (if (equal (plist-get event :widgetPlacement) "belowEditor")
+                        "belowEditor"
+                      "aboveEditor"))
+         (lines (plist-get event :widgetLines))
+         (widget (when (and (stringp key)
+                            lines
+                            (not (pilish--json-null-p lines)))
+                   (list :key key
+                         :placement placement
+                         :lines (pilish--extension-widget-sanitize-lines
+                                 lines)))))
+    (when (stringp key)
+      (pilish--set-extension-widgets
+       (append (cl-remove key pilish--extension-widgets
+                          :key (lambda (element) (plist-get element :key))
+                          :test #'equal)
+               (when widget (list widget)))))))
+
+(defun pilish--extension-ui-set-title (event)
+  "Handle setTitle method from EVENT."
+  (pilish--set-extension-title (plist-get event :title)))
+
+(defun pilish--extension-ui-editor (event proc)
+  "Handle editor method from EVENT, responding via PROC.
+Opens a temporary editor buffer and waits for the user to submit or
+cancel.  An empty submission is sent as an empty string."
+  (let* ((id (plist-get event :id))
+         (title-value (plist-get event :title))
+         (prefill-value (plist-get event :prefill))
+         (title (pilish--render-safe-string
+                 (unless (pilish--json-null-p title-value) title-value)
+                 "Editor"))
+         (prefill (pilish--render-safe-string
+                   (unless (pilish--json-null-p prefill-value)
+                     prefill-value)))
+         (value (condition-case err
+                    (pilish--read-extension-editor title prefill)
+                  (error
+                   (message "Pi: extension editor failed: %s"
+                            (error-message-string err))
+                   nil))))
+    (when proc
+      (pilish--send-extension-ui-response
+       proc
+       (if (stringp value)
+           (list :type "extension_ui_response" :id id :value value)
+         (list :type "extension_ui_response" :id id :cancelled t))))))
+
 (defconst pilish--extension-ui-fire-and-forget-methods
   '("notify" "setStatus" "setWidget" "setTitle" "set_editor_text"
-    "setWorkingMessage")
+    "setWorkingMessage" "setFooter" "setHeader" "setEditorComponent"
+    "addAutocompleteProvider")
   "Extension UI methods that do not expect RPC responses.")
 
 (defun pilish--extension-ui-response-required-p (method)
@@ -1237,8 +1313,11 @@ Dispatches to appropriate handler based on method."
       ("confirm"        (pilish--extension-ui-confirm event proc))
       ("select"         (pilish--extension-ui-select event proc))
       ("input"          (pilish--extension-ui-input event proc))
+      ("editor"         (pilish--extension-ui-editor event proc))
       ("set_editor_text" (pilish--extension-ui-set-editor-text event))
       ("setStatus"      (pilish--extension-ui-set-status event))
+      ("setWidget"      (pilish--extension-ui-set-widget event))
+      ("setTitle"       (pilish--extension-ui-set-title event))
       ("setWorkingMessage" (pilish--extension-ui-set-working-message event))
       (_                (pilish--extension-ui-unsupported event proc)))))
 

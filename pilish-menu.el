@@ -369,6 +369,8 @@ Call this when starting a new session to ensure no stale state persists."
         pilish--tool-block-order-counter 0
         pilish--thinking-block-order-counter 0)
   (pilish--set-activity-phase "idle" 'reset t)
+  (pilish--clear-extension-widgets)
+  (pilish--clear-extension-title)
   (pilish--clear-local-user-message-region)
   (pilish--invalidate-model-change)
   (pilish--clear-unsupported-extension-ui-warnings)

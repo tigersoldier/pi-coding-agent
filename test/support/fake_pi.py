@@ -125,6 +125,22 @@ class ExtensionDialogPrompt:
 
 
 @dataclass(frozen=True)
+class ExtensionUIPrompt:
+    """Scenario data for fire-and-forget extension UI events.
+
+    Each entry in ``events`` is merged into a fresh ``extension_ui_request``
+    envelope, so scenarios can emit ``notify``, ``setStatus``, ``setWidget``,
+    and ``setTitle`` requests without a round-trip.  A trailing custom message
+    can confirm the events were processed.
+    """
+
+    type: Literal["extension_ui"]
+    command_name: str
+    events: list[JsonDict] = field(default_factory=list)
+    message_text: str | None = None
+
+
+@dataclass(frozen=True)
 class CustomMessagePrompt:
     """Scenario data for a slash command that may emit one custom message."""
 
@@ -148,7 +164,11 @@ class ToolStreamPrompt:
 
 
 PromptBehavior = (
-    TextStreamPrompt | ExtensionDialogPrompt | CustomMessagePrompt | ToolStreamPrompt
+    TextStreamPrompt
+    | ExtensionDialogPrompt
+    | ExtensionUIPrompt
+    | CustomMessagePrompt
+    | ToolStreamPrompt
 )
 
 
@@ -275,6 +295,13 @@ def load_scenario(path: Path, name: str) -> Scenario:
                 else None
             ),
             response_messages=dict(prompt_data.get("response_messages", {})),
+        )
+    elif prompt_type == "extension_ui":
+        prompt = ExtensionUIPrompt(
+            type="extension_ui",
+            command_name=prompt_data["command_name"],
+            events=[dict(event) for event in prompt_data.get("events", [])],
+            message_text=prompt_data.get("message_text"),
         )
     elif prompt_type == "custom_message":
         prompt = CustomMessagePrompt(
@@ -492,6 +519,15 @@ class FakePiHarness:
                         message, cast(ExtensionDialogPrompt, behavior)
                     ),
                 )
+            case ExtensionUIPrompt() as behavior:
+                if message != behavior.command_name:
+                    self._fail(
+                        command,
+                        f"Scenario {self.scenario.name} only supports {behavior.command_name}",
+                    )
+                    return
+                self._respond(command)
+                self._run_extension_ui_prompt(message, behavior)
             case CustomMessagePrompt() as behavior:
                 if message != behavior.command_name:
                     self._fail(
@@ -766,6 +802,32 @@ class FakePiHarness:
         self._persist_custom_message(followup)
         self._write_json({"type": "message_start", "message": followup})
         self._write_json({"type": "message_end", "message": followup})
+
+    def _run_extension_ui_prompt(
+        self,
+        command_text: str,
+        behavior: ExtensionUIPrompt,
+    ) -> None:
+        """Emit fire-and-forget extension UI events, then an optional message."""
+        self._persist_user_message(self._build_user_message(command_text))
+        self._write_json({"type": "agent_start"})
+        for template in behavior.events:
+            event: JsonDict = {
+                "type": "extension_ui_request",
+                "id": f"ext-{uuid.uuid4().hex[:8]}",
+            }
+            event.update(template)
+            self._write_json(event)
+        if behavior.message_text:
+            followup = self._build_custom_message(
+                behavior.message_text.format(message=command_text)
+            )
+            self._persist_custom_message(followup)
+            self._write_json({"type": "message_start", "message": followup})
+            self._write_json({"type": "message_end", "message": followup})
+            self._finish_run([followup])
+        else:
+            self._finish_run([])
 
     def _run_tool_prompt(
         self,
