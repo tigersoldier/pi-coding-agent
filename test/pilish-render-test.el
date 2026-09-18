@@ -5881,6 +5881,126 @@ INPUT is returned by `read-shell-command', or signals `quit' when it is
       (should-not prompted)
       (should-not executed))))
 
+(ert-deftest pilish-test-copy-file-path-project-absolute ()
+  "A project file copies the same absolute shell-local path used by `!'."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (pilish--set-chat-session-identity "/tmp/project/")
+    (let ((inhibit-read-only t)) (insert "src/app.el:12"))
+    (goto-char (+ (point-min) 2))
+    (let ((kill-ring nil)
+          (kill-ring-yank-pointer nil)
+          (messages nil))
+      (cl-letf (((symbol-function 'message)
+                 (lambda (fmt &rest args)
+                   (push (apply #'format fmt args) messages))))
+        (pilish-copy-file-path))
+      (should (equal (car kill-ring) "/tmp/project/src/app.el"))
+      (should (equal kill-ring-yank-pointer kill-ring))
+      (should (member "Pi: Copied /tmp/project/src/app.el" messages)))))
+
+(ert-deftest pilish-test-copy-file-path-no-location ()
+  "A target without a location copies its absolute shell-local path."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (pilish--set-chat-session-identity "/tmp/project/")
+    (let ((inhibit-read-only t)) (insert "src/app.el"))
+    (goto-char (+ (point-min) 2))
+    (let ((kill-ring nil)
+          (kill-ring-yank-pointer nil))
+      (cl-letf (((symbol-function 'message) (lambda (&rest _))))
+        (pilish-copy-file-path))
+      (should (equal (car kill-ring) "/tmp/project/src/app.el")))))
+
+(ert-deftest pilish-test-copy-file-path-excludes-locations ()
+  "Line, column, and range metadata never enter the copied path."
+  (dolist (source '("src/app.el:12" "src/app.el:12:3"
+                    "src/app.el#L12-L20"))
+    (with-temp-buffer
+      (pilish-chat-mode)
+      (pilish--set-chat-session-identity "/tmp/project/")
+      (let ((inhibit-read-only t)) (insert source))
+      (goto-char (+ (point-min) 2))
+      (let ((kill-ring nil)
+            (kill-ring-yank-pointer nil))
+        (cl-letf (((symbol-function 'message) (lambda (&rest _))))
+          (pilish-copy-file-path))
+        (should (equal (car kill-ring) "/tmp/project/src/app.el"))))))
+
+(ert-deftest pilish-test-copy-file-path-outside-project-absolute ()
+  "A file outside the session directory copies its absolute path."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (pilish--set-chat-session-identity "/tmp/pi-inside/")
+    (let ((inhibit-read-only t)) (insert "/tmp/pi-outside/notes.txt"))
+    (goto-char (+ (point-min) 2))
+    (let ((kill-ring nil)
+          (kill-ring-yank-pointer nil))
+      (cl-letf (((symbol-function 'message) (lambda (&rest _))))
+        (pilish-copy-file-path))
+      (should (equal (car kill-ring) "/tmp/pi-outside/notes.txt")))))
+
+(ert-deftest pilish-test-copy-file-path-spaces-remain-path-text ()
+  "A copied path contains its literal spaces, not shell or @ quoting."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (pilish--set-chat-session-identity "/tmp/project/")
+    (let ((inhibit-read-only t)) (insert "`src/my file.el:3`"))
+    (goto-char (point-min))
+    (search-forward "src/my")
+    (let ((kill-ring nil)
+          (kill-ring-yank-pointer nil))
+      (cl-letf (((symbol-function 'message) (lambda (&rest _))))
+        (pilish-copy-file-path))
+      (should (equal (car kill-ring) "/tmp/project/src/my file.el")))))
+
+(ert-deftest pilish-test-copy-file-path-uses-remote-shell-namespace ()
+  "A remote target copies the path used by `!', without its TRAMP prefix."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (pilish--set-chat-session-identity
+     "/ssh:bastion|sudo:root@host:/srv/project/")
+    (pilish--display-tool-start "read" '(:path "src/app.el"))
+    (goto-char (overlay-start pilish--pending-tool-overlay))
+    (let ((kill-ring nil)
+          (kill-ring-yank-pointer nil))
+      (cl-letf (((symbol-function 'message) (lambda (&rest _))))
+        (pilish-copy-file-path))
+      (should (equal (car kill-ring) "/srv/project/src/app.el")))))
+
+(ert-deftest pilish-test-copy-file-path-preserves-shell-conversion-errors ()
+  "Copying shares `!'s controlled shell-path error instead of falling back."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (pilish--set-chat-session-identity "/ssh:host:/srv/project/")
+    (pilish--display-tool-start
+     "read" '(:path "/ssh:host:~root;printf PWNED/app.el"))
+    (goto-char (overlay-start pilish--pending-tool-overlay))
+    (let ((kill-ring nil)
+          (kill-ring-yank-pointer nil)
+          copied)
+      (cl-letf (((symbol-function 'kill-new)
+                 (lambda (&rest _) (setq copied t))))
+        (let ((err (should-error (pilish-copy-file-path)
+                                 :type 'user-error)))
+          (should (string-match-p "Unsafe shell home prefix"
+                                  (error-message-string err)))))
+      (should-not copied)
+      (should-not kill-ring))))
+
+(ert-deftest pilish-test-copy-file-path-no-target ()
+  "No target rejects with the public command's exact controlled error."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (let ((inhibit-read-only t) copied)
+      (insert "ordinary prose")
+      (cl-letf (((symbol-function 'kill-new)
+                 (lambda (&rest _) (setq copied t))))
+        (let ((err (should-error (pilish-copy-file-path)
+                                 :type 'user-error)))
+          (should (equal "No file at point" (error-message-string err)))))
+      (should-not copied))))
+
 (ert-deftest pilish-test-shell-command-at-point-delayed-error-before-prompt ()
   "A shell-only target error is raised before prompting or execution."
   (with-temp-buffer
@@ -10953,10 +11073,8 @@ fixture; a test may dynamically override it inside FUNCTION."
       (when (buffer-live-p chat)
         (kill-buffer chat)))))
 
-(ert-deftest pilish-test-local-md-ts-04-button-compatibility ()
-  "Real md-ts link buttons route local RET and reject URI RET.
-Skip when the loaded md-ts-mode does not provide link buttons, as in the
-supported installed 0.3 dependency lane."
+(ert-deftest pilish-test-md-ts-04-link-button-compatibility ()
+  "`md-ts-mode' 0.4 link buttons route local RET and reject URI RET."
   (let ((overriding-terminal-local-map nil)
         (overriding-local-map nil)
         (pre-command-hook nil)
@@ -10970,7 +11088,7 @@ supported installed 0.3 dependency lane."
       (goto-char (point-min))
       (search-forward "Displayed label")
       (goto-char (match-beginning 0))
-      (skip-unless (button-at (point)))
+      (should (button-at (point)))
       (should (equal "Displayed label" (button-label (button-at (point)))))
       (let ((buffer (current-buffer))
             (label-start (point))
@@ -11183,48 +11301,6 @@ supported installed 0.3 dependency lane."
                                (error-message-string err)))))))
       (when (buffer-live-p chat)
         (kill-buffer chat)))))
-
-(ert-deftest pilish-test-installed-md-ts-03-keeps-link-label-unbuttonized ()
-  "Installed md-ts-mode 0.3 leaves Markdown link Return dispatch to chat mode."
-  (with-temp-buffer
-    (pilish-chat-mode)
-    (pilish--set-chat-session-identity "/tmp/")
-    (let ((inhibit-read-only t))
-      (insert "[Report](docs/report.md)"))
-    (font-lock-ensure)
-    (goto-char (point-min))
-    (search-forward "Report")
-    (goto-char (match-beginning 0))
-    ;; A local newer implementation can be loaded while package metadata still
-    ;; names the installed 0.3 release; the separate compatibility test owns
-    ;; the buttonized behavior in that lane.
-    (skip-unless (not (button-at (point))))
-    (should (package-installed-p 'md-ts-mode '(0 3 0)))
-    (should (eq #'pilish-visit-file (key-binding (kbd "RET"))))
-    (should (eq #'pilish-visit-file
-                (key-binding (kbd "<return>"))))
-    (let ((buffer (current-buffer))
-          (overriding-terminal-local-map nil)
-          (overriding-local-map nil)
-          (pre-command-hook nil)
-          (post-command-hook nil)
-          calls)
-      (save-window-excursion
-        (switch-to-buffer buffer)
-        (cl-letf (((symbol-function 'find-file)
-                   (lambda (path)
-                     (push path calls)))
-                  ((symbol-function 'find-file-other-window)
-                   (lambda (&rest _)
-                     (ert-fail "Installed md-ts changed opener intent"))))
-          (let ((pilish-visit-file-other-window nil))
-            (execute-kbd-macro (kbd "RET"))
-            (goto-char (point-min))
-            (search-forward "Report")
-            (goto-char (match-beginning 0))
-            (execute-kbd-macro (kbd "<return>")))))
-      (should (equal '("/tmp/docs/report.md" "/tmp/docs/report.md")
-                     calls)))))
 
 (ert-deftest pilish-test-diff-line-at-point-added ()
   "Should parse line number from added diff line."
@@ -12827,6 +12903,14 @@ hooks, including `kill-buffer-hook'."
 
 ;; ── Coalesced streaming text/thinking deltas ───────────────────────
 
+(defun pilish-test--assert-md-ts-04-change-hook-capabilities ()
+  "Assert required `md-ts-mode' 0.4 change-hook functions are available."
+  (dolist (function
+           (cons 'md-ts--font-lock-dirty-side-effect-bounds
+                 pilish--md-ts-known-change-hooks))
+    (ert-info ((format "md-ts-mode 0.4.0 must define %S" function))
+      (should (fboundp function)))))
+
 (defun pilish-test--send-text-delta (text)
   "Send a text_delta message_update event carrying TEXT."
   (pilish--handle-display-event
@@ -12872,35 +12956,84 @@ hooks, including `kill-buffer-hook'."
       (should-not pilish--stream-delta-flush-timer))))
 
 (ert-deftest pilish-test-stream-delta-flush-preserves-kind-order ()
-  "Interleaved text and thinking deltas render in arrival order."
-  (with-temp-buffer
-    (pilish-chat-mode)
-    (pilish--handle-display-event '(:type "agent_start"))
-    (pilish--handle-display-event
-     '(:type "message_start" :message (:role "assistant")))
-    (pilish--handle-display-event
-     '(:type "message_update" :assistantMessageEvent (:type "thinking_start")))
-    (pilish-test--send-thinking-delta "ponder ")
-    (pilish-test--send-thinking-delta "deeply")
-    (pilish-test--send-text-delta "answer")
-    (pilish--flush-stream-deltas)
-    (let ((content (buffer-string)))
-      (should (string-match-p "ponder deeply" content))
-      (should (string-match-p "answer" content))
-      (should (< (string-match-p "ponder deeply" content)
-                 (string-match-p "answer" content))))))
+  "Large same-kind runs concatenate exactly once in arrival order."
+  (pilish-test--with-streaming-assistant
+    (let* ((first-text-chunks
+            (mapcar (lambda (i) (format "T%04d;" i))
+                    (number-sequence 0 999)))
+           (thinking-chunks
+            (mapcar (lambda (i) (format "H%04d;" i))
+                    (number-sequence 0 399)))
+           (last-text-chunks
+            (mapcar (lambda (i) (format "Z%04d;" i))
+                    (number-sequence 0 299)))
+           (first-text (mapconcat #'identity first-text-chunks ""))
+           (thinking (mapconcat #'identity thinking-chunks ""))
+           (last-text (mapconcat #'identity last-text-chunks ""))
+           (original-text (symbol-function 'pilish--display-message-delta))
+           (original-thinking (symbol-function 'pilish--display-thinking-delta))
+           calls)
+      (dolist (chunk first-text-chunks)
+        (pilish--queue-stream-delta 'text chunk))
+      (dolist (chunk thinking-chunks)
+        (pilish--queue-stream-delta 'thinking chunk))
+      (dolist (chunk last-text-chunks)
+        (pilish--queue-stream-delta 'text chunk))
+      (cl-letf (((symbol-function 'pilish--display-message-delta)
+                 (lambda (text)
+                   (push (cons 'text text) calls)
+                   (funcall original-text text)))
+                ((symbol-function 'pilish--display-thinking-delta)
+                 (lambda (text)
+                   (push (cons 'thinking text) calls)
+                   (funcall original-thinking text))))
+        (pilish--flush-stream-deltas))
+      (setq calls (nreverse calls))
+      (should (equal calls
+                     (list (cons 'text first-text)
+                           (cons 'thinking thinking)
+                           (cons 'text last-text))))
+      (let* ((content (buffer-string))
+             (first-position (string-search first-text content))
+             (thinking-position (string-search thinking content))
+             (last-position (string-search last-text content)))
+        (should (numberp first-position))
+        (should (numberp thinking-position))
+        (should (numberp last-position))
+        (should (< first-position thinking-position last-position)))
+      (should-not pilish--pending-stream-deltas)
+      (should-not pilish--stream-delta-flush-timer))))
 
 (ert-deftest pilish-test-stream-delta-flushes-before-non-delta-event ()
-  "A non-delta event paints pending text before inserting its own content."
+  "A non-delta event advances state, then paints text before its own output."
   (with-temp-buffer
     (pilish-chat-mode)
     (pilish--handle-display-event '(:type "agent_start"))
     (pilish--handle-display-event
      '(:type "message_start" :message (:role "assistant")))
     (pilish-test--send-text-delta "streamed first")
-    (pilish--handle-display-event
-     '(:type "tool_execution_start"
-       :toolName "bash" :toolCallId "call_1" :args (:command "echo hi")))
+    (let ((original-update (symbol-function 'pilish--update-state-from-event))
+          (original-delta (symbol-function 'pilish--display-message-delta))
+          (original-tool (symbol-function 'pilish--display-tool-start))
+          order)
+      (cl-letf (((symbol-function 'pilish--update-state-from-event)
+                 (lambda (event)
+                   (push 'state-update order)
+                   (funcall original-update event)))
+                ((symbol-function 'pilish--display-message-delta)
+                 (lambda (delta)
+                   (push 'stream-text order)
+                   (funcall original-delta delta)))
+                ((symbol-function 'pilish--display-tool-start)
+                 (lambda (&rest args)
+                   (push 'tool-output order)
+                   (apply original-tool args))))
+        (pilish--handle-display-event
+         '(:type "tool_execution_start"
+           :toolName "bash" :toolCallId "call_1"
+           :args (:command "echo hi"))))
+      (should (equal (nreverse order)
+                     '(state-update stream-text tool-output))))
     (let ((content (buffer-string)))
       (should (string-match-p "streamed first" content))
       (should (string-match-p "\\$ echo hi" content))
@@ -12909,11 +13042,83 @@ hooks, including `kill-buffer-hook'."
     (should-not pilish--pending-stream-deltas)
     (should-not pilish--stream-delta-flush-timer)))
 
+(ert-deftest pilish-test-stream-flush-error-before-insert-does-not-wedge-settlement ()
+  "A failed preflush cannot skip agent cleanup or follow-up settlement."
+  (pilish-test--with-streaming-assistant
+    (let ((original-update (symbol-function 'pilish--update-state-from-event))
+          (original-agent-end (symbol-function 'pilish--display-agent-end))
+          diagnostics updates sent
+          (terminal-cleanups 0))
+      (setq pilish--followup-queue '("queued follow-up"))
+      (pilish-test--send-text-delta "lost before insertion")
+      (should (timerp pilish--stream-delta-flush-timer))
+      (cl-letf (((symbol-function 'pilish--display-message-delta)
+                 (lambda (_delta) (error "before insertion")))
+                ((symbol-function 'pilish--update-state-from-event)
+                 (lambda (event)
+                   (push (plist-get event :type) updates)
+                   (funcall original-update event)))
+                ((symbol-function 'pilish--display-agent-end)
+                 (lambda ()
+                   (cl-incf terminal-cleanups)
+                   (funcall original-agent-end)))
+                ((symbol-function 'pilish--send-prompt)
+                 (lambda (text &optional on-success &rest _)
+                   (setq sent text)
+                   (when on-success (funcall on-success))))
+                ((symbol-function 'message)
+                 (lambda (format-string &rest args)
+                   (push (apply #'format format-string args) diagnostics))))
+        (pilish--handle-display-event '(:type "agent_end" :messages []))
+        (should-not pilish--pending-stream-deltas)
+        (should-not pilish--stream-delta-flush-timer)
+        (should (eq pilish--status 'sending))
+        (should (= terminal-cleanups 1))
+        (pilish--handle-display-event '(:type "agent_settled")))
+      (should (equal (nreverse updates) '("agent_end" "agent_settled")))
+      (should (equal diagnostics
+                     '("pilish: stream delta flush failed: before insertion")))
+      (should (= terminal-cleanups 1))
+      (should (eq pilish--status 'idle))
+      (should (equal sent "queued follow-up"))
+      (should-not pilish--followup-queue))))
+
+(ert-deftest pilish-test-stream-flush-error-after-insert-discards-batch ()
+  "A partially rendered failed batch is neither retried nor reordered."
+  (pilish-test--with-streaming-assistant
+    (pilish-test--send-text-delta "inserted exactly once")
+    (pilish-test--send-thinking-delta "later thinking")
+    (pilish-test--send-text-delta "later text")
+    (let ((original-delta (symbol-function 'pilish--display-message-delta))
+          diagnostics
+          (render-calls 0))
+      (cl-letf (((symbol-function 'pilish--display-message-delta)
+                 (lambda (delta)
+                   (cl-incf render-calls)
+                   (funcall original-delta delta)
+                   (error "after insertion")))
+                ((symbol-function 'message)
+                 (lambda (format-string &rest args)
+                   (push (apply #'format format-string args) diagnostics))))
+        (pilish--handle-display-event '(:type "agent_end" :messages []))
+        (pilish--handle-display-event '(:type "agent_settled")))
+      (let ((content (buffer-string)))
+        (should (= 1 render-calls))
+        (should (= 1 (pilish-test--count-matches
+                      "inserted exactly once" content)))
+        (should-not (string-match-p "later thinking" content))
+        (should-not (string-match-p "later text" content)))
+      (should (equal diagnostics
+                     '("pilish: stream delta flush failed: after insertion")))
+      (should-not pilish--pending-stream-deltas)
+      (should-not pilish--stream-delta-flush-timer)
+      (should (eq pilish--status 'idle)))))
+
 (ert-deftest pilish-test-stream-delta-flush-suspends-expensive-md-ts-hooks ()
-  "The coalesced flush keeps md-ts's cheap dirty-tick bookkeeping installed.
-Suspending `md-ts--font-lock-record-dirty-side-effect-bounds' too would make
-every flush look like an untracked full-buffer rewrite and accumulate dirty
-ranges; see `pilish--md-ts-expensive-change-hooks'."
+  "A coalesced flush suppresses stale tracking but keeps required md-ts hooks.
+The cheap dirty-tick hook and reference-definition before/after pair must stay
+installed so dirty ranges remain bounded and distant links stay up to date."
+  (pilish-test--assert-md-ts-04-change-hook-capabilities)
   (with-temp-buffer
     (pilish-chat-mode)
     (pilish--handle-display-event '(:type "agent_start"))
@@ -12929,17 +13134,25 @@ ranges; see `pilish--md-ts-expensive-change-hooks'."
                          seen-after after-change-functions)
                    (funcall orig delta))))
         (pilish--flush-stream-deltas))
-      ;; Expensive tracking is suspended during the insert ...
+      ;; Only stale side-effect tracking is suspended during the insert.
+      (should-not
+       (memq 'md-ts--font-lock-record-stale-side-effect-bounds seen-before))
       (should-not (seq-find #'pilish--md-ts-expensive-change-hook-p
                             seen-before))
       (should-not (seq-find #'pilish--md-ts-expensive-change-hook-p
                             seen-after))
-      ;; ... but the dirty-tick hook stays, so md-ts never sees an untracked
-      ;; full-buffer edit and the dirty-range list does not grow per flush.
+      ;; The dirty-tick hook stays, so md-ts never sees an untracked full-buffer
+      ;; edit and the dirty-range list does not grow per flush.
       (should (memq 'md-ts--font-lock-record-dirty-side-effect-bounds
                     seen-before))
       (should (memq 'md-ts--font-lock-record-dirty-side-effect-bounds
                     seen-after))
+      ;; The paired link hooks keep offscreen reference buttons current.
+      (should
+       (memq 'md-ts--before-change-check-link-reference-definition
+             seen-before))
+      (should
+       (memq 'md-ts--after-change-flush-link-reference-links seen-after))
       ;; Hooks are restored after the flush.
       (should (seq-find #'pilish--md-ts-change-hook-p
                         before-change-functions))
@@ -12980,8 +13193,9 @@ ranges; see `pilish--md-ts-expensive-change-hooks'."
         (kill-buffer buf)))))
 
 (ert-deftest pilish-test-md-ts-change-hooks-suspended-removes-and-restores ()
-  "Full suspension removes every md-ts per-change hook and restores them.
+  "Full suspension removes every known md-ts 0.4 hook and restores them.
 Bulk history replay uses this single-epoch form."
+  (pilish-test--assert-md-ts-04-change-hook-capabilities)
   (with-temp-buffer
     (pilish-chat-mode)
     (let ((before-hooks before-change-functions)
@@ -12997,8 +13211,84 @@ Bulk history replay uses this single-epoch form."
       (should (equal before-hooks before-change-functions))
       (should (equal after-hooks after-change-functions)))))
 
+(ert-deftest pilish-test-md-ts-future-hook-survives-full-suspension ()
+  "Full suspension removes known hooks but preserves an unknown md-ts hook.
+Exact hook values and local/inherited status survive normal and error exits."
+  (pilish-test--assert-md-ts-04-change-hook-capabilities)
+  (let ((known-hooks pilish--md-ts-known-change-hooks)
+        (future-hook 'md-ts--future-expensive-thing))
+    (cl-labels
+        ((exercise
+          (nonlocal)
+          (let ((before-hooks (copy-sequence before-change-functions))
+                (after-hooks (copy-sequence after-change-functions))
+                (before-local (local-variable-p 'before-change-functions))
+                (after-local (local-variable-p 'after-change-functions))
+                inside-before inside-after)
+            (dolist (hook known-hooks)
+              (should (or (memq hook before-hooks)
+                          (memq hook after-hooks))))
+            (let ((body
+                   (lambda ()
+                     (setq inside-before before-change-functions
+                           inside-after after-change-functions)
+                     (when nonlocal
+                       (error "synthetic nonlocal exit")))))
+              (if nonlocal
+                  (should-error
+                   (pilish--with-md-ts-change-hooks-suspended
+                       #'pilish--md-ts-change-hook-p
+                     (funcall body))
+                   :type 'error)
+                (pilish--with-md-ts-change-hooks-suspended
+                    #'pilish--md-ts-change-hook-p
+                  (funcall body))))
+            (should (memq future-hook inside-before))
+            (should (memq future-hook inside-after))
+            (dolist (hook known-hooks)
+              (should-not (memq hook inside-before))
+              (should-not (memq hook inside-after)))
+            (should (equal before-hooks before-change-functions))
+            (should (equal after-hooks after-change-functions))
+            (should (eq before-local
+                        (local-variable-p 'before-change-functions)))
+            (should (eq after-local
+                        (local-variable-p 'after-change-functions))))))
+      (cl-letf (((symbol-function 'md-ts--future-expensive-thing) #'ignore))
+        (dolist (local-hooks '(t nil))
+          (dolist (nonlocal '(nil t))
+            (ert-info ((format "%s hooks, %s exit"
+                               (if local-hooks "local" "inherited")
+                               (if nonlocal "nonlocal" "normal")))
+              (with-temp-buffer
+                (pilish-chat-mode)
+                (let ((mode-before (copy-sequence before-change-functions))
+                      (mode-after (copy-sequence after-change-functions)))
+                  (if local-hooks
+                      (progn
+                        (add-hook 'before-change-functions future-hook nil t)
+                        (add-hook 'after-change-functions future-hook nil t)
+                        (exercise nonlocal))
+                    (let ((default-before
+                           (default-value 'before-change-functions))
+                          (default-after
+                           (default-value 'after-change-functions)))
+                      (unwind-protect
+                          (progn
+                            (set-default 'before-change-functions
+                                         (cons future-hook mode-before))
+                            (set-default 'after-change-functions
+                                         (cons future-hook mode-after))
+                            (kill-local-variable 'before-change-functions)
+                            (kill-local-variable 'after-change-functions)
+                            (exercise nonlocal))
+                        (set-default 'before-change-functions default-before)
+                        (set-default 'after-change-functions
+                                     default-after)))))))))))))
+
 (ert-deftest pilish-test-md-ts-expensive-hooks-suspended-keeps-dirty-tick ()
   "Expensive-hook suspension keeps md-ts's dirty-tick hook installed."
+  (pilish-test--assert-md-ts-04-change-hook-capabilities)
   (with-temp-buffer
     (pilish-chat-mode)
     (let ((inside-before nil)
@@ -13044,6 +13334,7 @@ Suspending every md-ts hook makes each flush look like an untracked
 full-buffer rewrite, so md-ts pushes a full-buffer dirty range on the
 next fontification and retains its non-fontified prefix.  Keeping the
 cheap dirty-tick hook bounds the list instead."
+  (pilish-test--assert-md-ts-04-change-hook-capabilities)
   (let ((hybrid (pilish-test--stream-dirty-ranges 200 nil))
         (full (pilish-test--stream-dirty-ranges 200 t)))
     (should (<= hybrid 5))
@@ -14387,6 +14678,36 @@ banner just because it was still queued when the process died."
             (should (string-match-p "pi process exited" content))
             (should (< (string-match-p "residual text" content)
                        (string-match-p "pi process exited" content)))))
+      (when (process-live-p process)
+        (delete-process process)))))
+
+(ert-deftest pilish-test-process-exit-survives-stream-flush-error ()
+  "A failed pending-text flush cannot skip the exit banner or cleanup."
+  (let ((process (start-process "pilish-render-exit-error-test" nil "cat")))
+    (unwind-protect
+        (pilish-test--with-streaming-assistant
+          (setq pilish--process process)
+          (pilish-test--send-text-delta "unrenderable residual")
+          (let (diagnostics)
+            (cl-letf (((symbol-function 'pilish--display-message-delta)
+                       (lambda (_delta) (error "exit flush")))
+                      ((symbol-function 'message)
+                       (lambda (format-string &rest args)
+                         (push (apply #'format format-string args)
+                               diagnostics))))
+              (pilish--mark-process-exited
+               process '(:error "transport failed" :exitCode 9)))
+            (should (equal diagnostics
+                           '("pilish: stream delta flush failed: exit flush"))))
+          (should (string-match-p "pi process exited" (buffer-string)))
+          (should (process-get process 'pilish-exit-error-rendered))
+          (should-not pilish--pending-stream-deltas)
+          (should-not pilish--stream-delta-flush-timer)
+          (should-not pilish--process)
+          (should (eq pilish--status 'idle))
+          (should (equal pilish--activity-phase "idle"))
+          (should (equal (plist-get pilish--state :last-error)
+                         "transport failed")))
       (when (process-live-p process)
         (delete-process process)))))
 
@@ -15765,6 +16086,148 @@ events where the header text hasn't changed."
       (pilish--display-session-history messages (current-buffer))
       (goto-char (marker-position pilish--hot-tail-start))
       (should (looking-at "Assistant")))))
+
+;;; Stdout silence across real display/lifecycle dispatch
+
+(ert-deftest pilish-test-inactivity-raw-noise-clears-and-rewarns-without-dispatch ()
+  "Partial, malformed, response and unknown stdout clear a warning literally."
+  (pilish-test-with-inactivity-session (chat input proc commands now)
+    (pilish-test--stdout proc '(:type "agent_start"))
+    (let ((normal (pilish-test--input-header input))
+          (text (with-current-buffer chat (buffer-string))))
+      (dolist (chunk '(" " "\ninvalid JSON\n" "{\"type\":\"response\""
+                       ",\"success\":true}\n" "{\"type\":\"unknown\"}\n"))
+        (ert-info ((format "raw chunk=%S" chunk))
+          (setq now (+ now 300))
+          (pilish-test--assert-inactivity input "thinking (no output 5m)")
+          (pilish--process-filter proc chunk)
+          (should (equal normal (pilish-test--input-header input)))
+          (should (eq 'streaming (buffer-local-value 'pilish--status chat)))
+          (should (equal text (with-current-buffer chat (buffer-string))))))
+      (setq now (+ now 300))
+      (pilish--process-filter proc "")
+      (with-current-buffer input (insert "typing is not stdout"))
+      (pilish-test--assert-inactivity input "thinking (no output 5m)")
+      (should-not commands))))
+
+(ert-deftest pilish-test-inactivity-batched-end-start-keeps-chunk-receipt-time ()
+  "Timer rearming must not replace output already observed in the same chunk."
+  (pilish-test-with-inactivity-session (chat input proc commands now)
+    (pilish-test--stdout proc '(:type "agent_start"))
+    (setq now 1400.0)
+    (let ((original (symbol-function 'pilish--handle-display-event)))
+      (cl-letf (((symbol-function 'pilish--handle-display-event)
+                 (lambda (event)
+                   ;; Simulate expensive display work after chunk receipt.
+                   (setq now (+ now 10))
+                   (funcall original event))))
+        (pilish-test--stdout proc '(:type "agent_end" :messages [])
+                             '(:type "agent_start"))))
+    (should (eq 'streaming (buffer-local-value 'pilish--status chat)))
+    (pilish-test--assert-inactivity input nil)
+    (setq now 1700.0)
+    (pilish-test--assert-inactivity input "thinking (no output 5m)")))
+
+(ert-deftest pilish-test-inactivity-unchanged-phase-deltas-do-not-churn-timer ()
+  "Identical text or generic tool progress keeps one observer and a fresh age."
+  (dolist (phase '("replying" "running"))
+    (ert-info ((format "progress phase=%s" phase))
+      (pilish-test-with-inactivity-session (chat input proc commands now)
+        (pilish-test-with-repeating-timer-allocations allocated
+          (let ((before (copy-sequence timer-list)))
+            (pilish-test--stdout proc '(:type "agent_start"))
+            (let ((observer (buffer-local-value 'pilish--inactivity-timer chat))
+                  (scheduled (cl-remove-if-not #'timer--repeat-delay timer-list)))
+              (should (timerp observer))
+              (should (equal (cl-set-difference timer-list before) (list observer)))
+              (when (equal phase "running")
+                (pilish-test--stdout
+                 proc '(:type "tool_execution_start" :toolName "generic" :toolCallId "tool"
+                              :args (:task "work"))))
+              (dotimes (_ 4)
+                (setq now (+ now 250))
+                (pilish-test--stdout
+                 proc (if (equal phase "replying")
+                          '(:type "message_update"
+                                  :assistantMessageEvent (:type "text_delta" :delta "more text "))
+                        '(:type "tool_execution_update" :toolCallId "tool" :toolName "generic"
+                                :partialResult (:content [(:type "text" :text "still working")]))))
+                (should (equal phase (buffer-local-value 'pilish--activity-phase chat)))
+                (pilish-test--assert-inactivity input nil)
+                (should (eq observer (buffer-local-value 'pilish--inactivity-timer chat)))
+                ;; Also reject timers allocated and cancelled within the update.
+                (should (equal allocated (list observer)))
+                ;; Ignore the renderer's one-shot flush, not extra repeating observers.
+                (should (equal scheduled
+                               (cl-remove-if-not #'timer--repeat-delay timer-list))))))
+          (if (equal phase "replying")
+              (with-current-buffer chat
+                (pilish--flush-stream-deltas)
+                (should (string-match-p "more text more text more text more text"
+                                        (buffer-string))))
+            (should (equal '(:content [(:type "text" :text "still working")])
+                           (plist-get
+                            (gethash "tool" (plist-get (buffer-local-value 'pilish--state chat)
+                                                       :active-tools))
+                            :partial-result))))
+          (setq now (+ now 300))
+          (pilish-test--assert-inactivity input (concat phase " (no output 5m)")))))))
+
+(ert-deftest pilish-test-inactivity-compaction-preserves-manual-and-auto-owners ()
+  "Warning changes neither compaction restoration nor pending reservations."
+  (dolist (case '(("manual" sending idle)
+                  ("threshold" streaming streaming)
+                  ("threshold" sending sending)))
+    (ert-info ((format "compaction owner=%S" case))
+      (pilish-test-with-inactivity-session (chat input proc commands now)
+        (let (notices)
+          (cl-letf (((symbol-function 'message)
+                     (lambda (fmt &rest args) (push (apply #'format fmt args) notices))))
+            (with-current-buffer chat (setq pilish--status (cadr case)))
+            (pilish-test--stdout proc `(:type "compaction_start" :reason ,(car case)))
+            (setq now 1300.0)
+            (pilish-test--assert-inactivity input "compact (no output 5m)")
+            (should (eq 'compacting (buffer-local-value 'pilish--status chat)))
+            (let ((timer (buffer-local-value 'pilish--inactivity-timer chat)))
+              (should (memq timer timer-list))
+              (pilish-test--stdout
+               proc `(:type "compaction_end" :reason ,(car case) :aborted t))
+              (should (eq (caddr case) (buffer-local-value 'pilish--status chat)))
+              (pilish-test--assert-inactivity input nil)
+              (if (eq (caddr case) 'streaming)
+                  (progn
+                    (should (memq timer timer-list))
+                    (setq now 1600.0)
+                    (pilish-test--assert-inactivity input "no output 5m"))
+                (should-not (memq timer timer-list)))))
+          (should (equal notices '("Pi: Compaction cancelled" "Pi: Compacting..."))))))))
+
+(ert-deftest pilish-test-inactivity-display-errors-preserve-observation-and-cleanup ()
+  "State changes still establish and cancel observation when rendering fails."
+  (pilish-test-with-inactivity-session (chat input proc commands now)
+    (let (notices)
+      (cl-letf (((symbol-function 'message)
+                 (lambda (fmt &rest args) (push (apply #'format fmt args) notices))))
+        (cl-letf (((symbol-function 'pilish--display-agent-start)
+                   (lambda () (error "start renderer failed"))))
+          (pilish-test--stdout proc '(:type "agent_start")))
+        (should (eq 'streaming (buffer-local-value 'pilish--status chat)))
+        (let ((timer (buffer-local-value 'pilish--inactivity-timer chat)))
+          (setq now 1300.0)
+          (pilish-test--fire-timer timer)
+          ;; The failed leaf did not set thinking; retain the real phase.
+          (pilish-test--assert-inactivity input "idle (no output 5m)")
+          (cl-letf (((symbol-function 'pilish--display-agent-end)
+                     (lambda (&rest _) (error "end renderer failed"))))
+            (pilish-test--stdout proc '(:type "agent_end" :messages [])))
+          (should (eq 'sending (buffer-local-value 'pilish--status chat)))
+          (pilish-test--assert-inactivity input nil)
+          (should-not (memq timer timer-list))
+          (should-not (buffer-local-value 'pilish--inactivity-timer chat))))
+      (should (equal notices
+                     '("pilish: error dispatching process response: end renderer failed"
+                       "pilish: error dispatching process response: start renderer failed")))
+      (should-not commands))))
 
 (provide 'pilish-render-test)
 ;;; pilish-render-test.el ends here

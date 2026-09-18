@@ -34,6 +34,7 @@ VERBOSE ?=
 .PHONY: test-integration test-integration-fake test-integration-real test-integration-ci test-integration-ci-real test-gui test-gui-ci test-all
 .PHONY: bench bench-batch bench-reload-resume bench-reload-resume-batch bench-reload-resume-smoke
 .PHONY: bench-tool-update bench-tool-update-batch bench-tool-update-smoke
+.PHONY: bench-stream-delta bench-stream-delta-batch bench-stream-delta-smoke
 .PHONY: bench-agent-end-cooling bench-agent-end-cooling-batch bench-agent-end-cooling-smoke
 .PHONY: check check-parens compile lint lint-checkdoc lint-package clean clean-cache help
 .PHONY: ollama-start ollama-stop ollama-status setup-pi install-hooks
@@ -63,6 +64,9 @@ help:
 	@echo "  make bench-tool-update             Tool-update storm benchmarks (GUI via xvfb)"
 	@echo "  make bench-tool-update-batch       Tool-update storm benchmarks (batch, secondary lane)"
 	@echo "  make bench-tool-update-smoke       Tool-update storm smoke benchmark (batch, no timing thresholds)"
+	@echo "  make bench-stream-delta            Stream-delta benchmark (GUI via xvfb)"
+	@echo "  make bench-stream-delta-batch      Stream-delta benchmark (batch, secondary lane)"
+	@echo "  make bench-stream-delta-smoke      Stream-delta smoke benchmark (batch, no timing thresholds)"
 	@echo "  make bench-agent-end-cooling       Deferred agent_end cooling benchmark (GUI via xvfb)"
 	@echo "  make bench-agent-end-cooling-batch Deferred agent_end cooling benchmark (batch, secondary lane)"
 	@echo "  make bench-agent-end-cooling-smoke Cheap deferred cooling smoke (batch, no timing thresholds)"
@@ -128,6 +132,7 @@ test: .deps-stamp
 		-l pilish-browse-test \
 		-l pilish-jsonl-test \
 		-l pilish-build-test \
+		-l pilish-evil-test \
 		-l pilish-fake-pi-test \
 		-l pilish-gui-test-utils-test \
 		-l pilish-integration-test-common-test \
@@ -310,6 +315,18 @@ bench-tool-update-batch: .deps-stamp
 bench-tool-update-smoke: .deps-stamp
 	@./bench/run-tool-update-bench.sh --batch --scenario smoke -c 1
 
+# Primary lane: GUI via xvfb for representative coalesced stream rendering.
+bench-stream-delta: .deps-stamp
+	@./bench/run-stream-delta-bench.sh
+
+# Secondary lane: batch mode; useful for CI artifacts and quick comparisons.
+bench-stream-delta-batch: .deps-stamp
+	@./bench/run-stream-delta-bench.sh --batch
+
+# Cheap correctness/regression smoke; no timing thresholds are enforced.
+bench-stream-delta-smoke: .deps-stamp
+	@./bench/run-stream-delta-bench.sh --batch --scenario smoke -c 1
+
 # Deferred agent_end regression: a 90-overlay cohort drains through the real
 # process filter and production one-shot cooling timers.  Timing is diagnostic.
 bench-agent-end-cooling: .deps-stamp
@@ -343,7 +360,7 @@ ollama-status:
 
 check-parens:
 	@echo "=== Check Parens ==="
-	@OUTPUT=$$($(BATCH) --eval '(condition-case err (dolist (f (list "scripts/pilish-build.el" "scripts/install-deps.el" "scripts/install-ts-grammars.el" "pilish-core.el" "pilish-jsonl.el" "pilish-grammars.el" "pilish-ui.el" "pilish-table.el" "pilish-render.el" "pilish-input.el" "pilish-menu.el" "pilish-browse.el" "pilish.el")) (with-current-buffer (find-file-noselect f) (check-parens) (message "%s OK" f))) (user-error (message "FAIL: %s" (error-message-string err)) (kill-emacs 1)))' 2>&1); \
+	@OUTPUT=$$($(BATCH) --eval '(condition-case err (dolist (f (list "scripts/pilish-build.el" "scripts/install-deps.el" "scripts/install-ts-grammars.el" "pilish-core.el" "pilish-jsonl.el" "pilish-grammars.el" "pilish-ui.el" "pilish-table.el" "pilish-render.el" "pilish-input.el" "pilish-menu.el" "pilish-browse.el" "pilish-evil.el" "pilish.el")) (with-current-buffer (find-file-noselect f) (check-parens) (message "%s OK" f))) (user-error (message "FAIL: %s" (error-message-string err)) (kill-emacs 1)))' 2>&1); \
 	echo "$$OUTPUT" | grep -E "OK$$|FAIL:"; \
 	echo "$$OUTPUT" | grep -q "FAIL:" && exit 1 || true
 
@@ -355,7 +372,7 @@ compile: .deps-stamp
 		--eval "(package-initialize)" \
 		$(LOCAL_LOAD_PATH) \
 		--eval "(setq byte-compile-error-on-warn t)" \
-		-f batch-byte-compile scripts/pilish-build.el scripts/install-deps.el scripts/install-ts-grammars.el pilish-core.el pilish-jsonl.el pilish-grammars.el pilish-ui.el pilish-table.el pilish-render.el pilish-input.el pilish-menu.el pilish-browse.el pilish.el
+		-f batch-byte-compile scripts/pilish-build.el scripts/install-deps.el scripts/install-ts-grammars.el pilish-core.el pilish-jsonl.el pilish-grammars.el pilish-ui.el pilish-table.el pilish-render.el pilish-input.el pilish-menu.el pilish-browse.el pilish-evil.el pilish.el
 
 lint: lint-checkdoc lint-package
 
@@ -376,6 +393,7 @@ lint-checkdoc:
 		--eval "(checkdoc-file \"pilish-input.el\")" \
 		--eval "(checkdoc-file \"pilish-menu.el\")" \
 		--eval "(checkdoc-file \"pilish-browse.el\")" \
+		--eval "(checkdoc-file \"pilish-evil.el\")" \
 		--eval "(checkdoc-file \"pilish.el\")" 2>&1); \
 	WARNINGS=$$(echo "$$OUTPUT" | grep -A1 "^Warning" | grep -v "^Warning\|^--$$"); \
 	if [ -n "$$WARNINGS" ]; then echo "$$WARNINGS"; exit 1; else echo "OK"; fi

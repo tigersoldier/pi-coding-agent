@@ -10,8 +10,8 @@
 ;; Assisted-by: pi:claude-opus-4.6
 ;; URL: https://github.com/dnouri/pilish
 ;; Keywords: ai llm ai-pair-programming tools
-;; Version: 3.0.2
-;; Package-Requires: ((emacs "29.1") (transient "0.9.0") (magit-section "4.0.0") (md-ts-mode "0.3.0") (markdown-table-wrap "0.2.0"))
+;; Version: 3.1.0
+;; Package-Requires: ((emacs "29.1") (transient "0.9.0") (magit-section "4.0.0") (md-ts-mode "0.4.0") (markdown-table-wrap "0.2.0"))
 
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -72,6 +72,7 @@
 ;;     TAB            Toggle completed thinking/tool section or fold turn
 ;;     !              Run a Dired-inspired shell command on a strict file target
 ;;                    (command + dash-options appends it; otherwise use *)
+;;     w              Copy the shell-local file path to the kill ring
 ;;     RET            Visit strict file target at point (tool content,
 ;;                    plain path, or local Markdown label)
 ;;     C-c C-k        Abort current operation
