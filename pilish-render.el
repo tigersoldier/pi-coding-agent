@@ -235,6 +235,22 @@ Values are weak references to existing finalized tool records: hover must not
 retain their output, markers, or overlays after cooling.  Entries are removed
 on receipt and the table is cleared at agent/session/process teardown.")
 
+(defmacro pilish--with-md-ts-tool-changes-suspended (&rest body)
+  "Run BODY with md-ts's expensive per-change hooks suspended.
+Use this for tool-rendering rewrites that the event and stream entry points
+do not already cover: toggling a tool body, cooling a completed tool block,
+and rewriting completed thinking.  `pilish-chat-mode' derives from
+`md-ts-mode', whose expensive change hook queries tree-sitter over regions
+that grow with the buffer, so an unsuspended rewrite costs time proportional
+to the whole transcript.  Only the expensive tracking hook is removed:
+md-ts keeps its cheap dirty-tick bookkeeping, so repeated suspended rewrites
+do not accumulate full-buffer dirty ranges, and jit-lock still fontifies the
+visible text at the next redisplay."
+  (declare (indent 0) (debug t))
+  `(pilish--with-md-ts-change-hooks-suspended
+       #'pilish--md-ts-expensive-change-hook-p
+     ,@body))
+
 (defun pilish--history-postprocessing-deferred-p ()
   "Return non-nil when history display post-processing is currently deferred."
   pilish--defer-history-postprocessing)
@@ -2441,7 +2457,8 @@ retained facts through the existing queue."
                                   (pilish--tool-block-displayed-output block)))
            (view (pilish--capture-tool-cooling-view))
            (inhibit-read-only t))
-      (save-excursion
+      (pilish--with-md-ts-tool-changes-suspended
+       (save-excursion
         (remove-overlays start old-end 'pilish-diff-overlay t)
         (delete-region start old-end)
         (goto-char start)
@@ -2449,7 +2466,7 @@ retained facts through the existing queue."
         (set-marker header start)
         (set-marker end (point))
         (pilish--tool-block-refresh-overlay block)
-        (pilish--font-lock-ensure-excluding-property start (point) 'pilish-no-fontify))
+        (pilish--font-lock-ensure-excluding-property start (point) 'pilish-no-fontify)))
       (let* ((new-end (marker-position end))
              (new-sections
               (pilish--tool-section-bounds
@@ -4679,7 +4696,8 @@ Preserves window scroll position during the toggle."
          (is-edit-diff (button-get button 'pilish-is-edit-diff))
          (hidden-count (button-get button 'hidden-count))
          (btn-start (button-start button)))
-    (save-excursion
+    (pilish--with-md-ts-tool-changes-suspended
+     (save-excursion
       ;; Find the tool overlay
       (goto-char btn-start)
       (when-let* ((bounds (pilish--find-tool-block-bounds))
@@ -4736,14 +4754,15 @@ Preserves window scroll position during the toggle."
                       (set-window-point win (min old-point (point-max))))
                   ;; Window was inside tool content - show from block start
                   (set-window-start win block-start t)
-                  (set-window-point win block-start))))))))))
+                  (set-window-point win block-start)))))))))))
 
 (defun pilish--replace-thinking-block-region (start end rendered)
   "Replace completed-thinking text in START..END with RENDERED.
 Returns the new bounds as (START . NEW-END)."
   (let ((inhibit-read-only t)
         new-end)
-    (save-excursion
+    (pilish--with-md-ts-tool-changes-suspended
+     (save-excursion
       (goto-char start)
       ;; A table overlay may include a trailing newline outside this block.
       (pilish--remove-table-overlays start end)
@@ -4752,7 +4771,7 @@ Returns the new bounds as (START . NEW-END)."
       (setq new-end (point))
       (condition-case-unless-debug nil
           (font-lock-ensure start new-end)
-        (error nil)))
+        (error nil))))
     (cons start new-end)))
 
 (defun pilish--replace-thinking-block (block rendered)
@@ -5303,11 +5322,12 @@ diff annotations.  Return the applied projection metadata, or nil if ineligible.
              (ov-start (overlay-start overlay))
              (ov-end (overlay-end overlay))
              (record (pilish--tool-block-from-overlay overlay)))
-        (remove-overlays ov-start ov-end 'pilish-diff-overlay t)
-        (remove-text-properties
-         ov-start ov-end '(pilish-cold-tool-block nil))
-        (delete-overlay overlay)
-        (save-excursion
+        (pilish--with-md-ts-tool-changes-suspended
+         (remove-overlays ov-start ov-end 'pilish-diff-overlay t)
+         (remove-text-properties
+          ov-start ov-end '(pilish-cold-tool-block nil))
+         (delete-overlay overlay)
+         (save-excursion
           (goto-char header-end)
           (delete-region header-end ov-end)
           (insert cold-body)
@@ -5316,7 +5336,7 @@ diff annotations.  Return the applied projection metadata, or nil if ineligible.
            ov-start (point)
            `(pilish-cold-tool-block ,target-metadata))
           (when-let* ((help (plist-get target-metadata :help)))
-            (pilish--set-hover-help ov-start (point) help)))
+            (pilish--set-hover-help ov-start (point) help))))
         (when (and record (pilish--tool-block-compound-p record))
           (pilish--release-nested-tool-block record))
         metadata))))
