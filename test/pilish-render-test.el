@@ -22074,5 +22074,71 @@ events where the header text hasn't changed."
                        "pilish: error dispatching process response: start renderer failed")))
       (should-not commands))))
 
+;; ── md-ts suspension for uncovered tool rewrites ───────────────────
+
+(defmacro pilish-test--with-md-ts-hook-capture (capture-fn &rest body)
+  "Run BODY capturing change hooks when CAPTURE-FN is called.
+Return a cons of the captured `before-change-functions' and
+`after-change-functions' lists."
+  (declare (indent 1) (debug t))
+  `(let ((pilish-test--captured-before nil)
+         (pilish-test--captured-after nil)
+         (pilish-test--capture-orig (symbol-function ',capture-fn)))
+     (cl-letf (((symbol-function ',capture-fn)
+                (lambda (&rest args)
+                  (setq pilish-test--captured-before before-change-functions
+                        pilish-test--captured-after after-change-functions)
+                  (apply pilish-test--capture-orig args))))
+       ,@body)
+     (cons pilish-test--captured-before pilish-test--captured-after)))
+
+(defun pilish-test--md-ts-expensive-hooks-suspended-p (captured)
+  "Return non-nil when CAPTURED shows no expensive md-ts hook installed."
+  (and (not (seq-find #'pilish--md-ts-expensive-change-hook-p
+                      (car captured)))
+       (not (seq-find #'pilish--md-ts-expensive-change-hook-p
+                      (cdr captured)))))
+
+(ert-deftest pilish-test-compound-tool-redraw-suspends-expensive-md-ts-hooks ()
+  "Compound tool redraws suspend md-ts's expensive change hook.
+`pilish--toggle-compound-tool-section' redraws the whole body through
+`pilish--redraw-compound-tool', so the toggle path must be covered."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (pilish-test--nested-event
+     "tool_execution_start" "p" nil :toolName "codemode" :args '(:code "return 1;"))
+    (pilish-test--nested-event
+     "tool_execution_end" "p" nil :toolName "codemode" :isError nil
+     :result '(:content [(:type "text" :text "PARENT")]
+               :details (:calls [(:id "child" :name "read" :status "ok")])))
+    (let* ((block (pilish--nested-tool-owner "p"))
+           (captured
+            (pilish-test--with-md-ts-hook-capture
+                pilish--insert-compound-tool-body
+              (pilish--redraw-compound-tool block))))
+      (should (pilish-test--md-ts-expensive-hooks-suspended-p captured))
+      ;; The expensive hook is restored after the redraw.
+      (should (seq-find #'pilish--md-ts-expensive-change-hook-p
+                        before-change-functions)))))
+
+(ert-deftest pilish-test-tool-cooling-suspends-remove-text-properties-hook ()
+  "Cooling runs its `remove-text-properties' pass under the suspension.
+Text property changes invoke the change functions, so the removal must not
+run before the suspension scope."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (let* ((block (pilish--display-tool-start "bash" '(:command "ls")))
+           (_ (pilish--display-tool-end "bash" '(:command "ls")
+                                        '((:type "text" :text "file.txt"))
+                                        nil nil block))
+           (overlay (pilish--tool-block-overlay block))
+           (captured
+            (pilish-test--with-md-ts-hook-capture
+                remove-text-properties
+              (pilish--cool-tool-overlay overlay))))
+      (should (pilish-test--md-ts-expensive-hooks-suspended-p captured))
+      (should (string-match-p "file.txt" (buffer-string)))
+      (should-not (overlay-buffer overlay)))))
+
 (provide 'pilish-render-test)
 ;;; pilish-render-test.el ends here
