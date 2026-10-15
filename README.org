@@ -250,19 +250,24 @@ visible.  Send the image with a nonempty ordinary prompt while Pi is
 idle and a vision-capable model is selected; the finer rules live
 under =Images= in Advanced.
 
-Slash commands work with completion: type =/= then =TAB= to complete
-built-in commands and Pi commands such as prompt templates, skills,
-and extension commands.  Candidates show their descriptions and any
-known argument hints.  Known command arguments complete too: after
-=/model =, the running session's model labels are available, and
-completing/sending one selects that model.  Extend
-=pilish-command-argument-completions= with functions of your own for
-custom commands; each receives the argument prefix and returns candidate
-strings.  Prompt templates are discovered from places such as
-=~/.pi/agent/prompts/=, and skills from =~/.agents/skills/=.  File
-references also complete: use =TAB= on paths such as =./=, =../=, and
-=~/=; absolute paths complete too, except for a bare =/= at buffer
-start, where slash-command completion wins.
+Slash commands complete in the input buffer: type =/= then =TAB= to
+complete built-in commands and Pi commands such as prompt templates,
+skills, and extension commands.  Candidates show descriptions and
+argument hints.  With =company-mode= or =corfu-mode= enabled, completion
+pops up inline as you type, including after =/= and after the space for a
+command with known argument values.  Without an in-buffer front-end,
+=TAB= continues to use Emacs completion; =@= file references keep their
+minibuffer fallback.
+
+Known command arguments complete too: after =/model =, the running
+session's model labels are available, and completing/sending one selects
+that model.  Extend =pilish-command-argument-completions= with functions
+of your own for custom commands; each function receives the argument
+prefix and returns candidate strings.  Prompt templates are discovered
+from places such as =~/.pi/agent/prompts/=, and skills from
+=~/.agents/skills/=.  Paths continue to complete with =TAB=: try =./=,
+=../=, =~/=, or an absolute path (except for a bare =/= at buffer start,
+where slash-command completion takes precedence).
 
 While composing, you can page through the chat without leaving the
 input buffer.  Emacs's built-in =M-<prior>= and =M-<next>=

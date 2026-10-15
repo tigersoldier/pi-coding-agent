@@ -3270,6 +3270,28 @@ only offer our own capfs (slash commands, file references, paths)."
     (pilish-input-mode)
     (should-not (pilish-model-argument-completions "gpt"))))
 
+(ert-deftest pilish-test-slash-completion-trigger-predicates ()
+  "Slash triggers recognize command start and known argument positions."
+  (with-temp-buffer
+    (pilish-input-mode)
+    (insert "/")
+    (should (pilish--slash-command-trigger-p))
+    (insert "model ")
+    (should (pilish--slash-argument-trigger-p))
+    (insert "gpt")
+    (should-not (pilish--slash-argument-trigger-p)))
+  (with-temp-buffer
+    (pilish-input-mode)
+    (insert "/compact ")
+    (should-not (pilish--slash-argument-trigger-p))))
+
+(ert-deftest pilish-test-in-buffer-completion-front-end-detection ()
+  "Front-end detection is nil in a plain buffer without company or corfu."
+  (with-temp-buffer
+    (pilish-input-mode)
+    (should-not (pilish--in-buffer-completion-active-p))
+    (should-not (pilish--run-in-buffer-completion))))
+
 (ert-deftest pilish-test-send-prompt-sends-literal ()
   "pilish--send-prompt sends text literally (no expansion).
 Pi handles command expansion on the server side."
