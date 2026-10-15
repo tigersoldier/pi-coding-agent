@@ -28,8 +28,10 @@
 ;; Input buffer features for Pilish: prompt composition,
 ;; history navigation (comint/eshell-style M-p/M-n), incremental
 ;; history search (readline-style C-r), file reference completion (@),
-;; path completion (Tab), slash command completion, message queuing
-;; (follow-up and steering), and send/abort commands.
+;; path completion (Tab), slash-command and argument completion, and fuzzy
+;; in-buffer completion through company-mode (enabled by default; Corfu can
+;; also be used), message queuing (follow-up and steering), and send/abort
+;; commands.
 ;;
 ;; Key entry points:
 ;;   `pilish-send'                  Send prompt (C-c C-c)
@@ -47,6 +49,7 @@
 
 (require 'pilish-render)
 (require 'ring)
+(require 'company)
 
 ;;;; Input History (comint/eshell style)
 
@@ -261,6 +264,11 @@ markup visibility, mode identity, and keybindings.  Set
   (add-hook 'completion-at-point-functions #'pilish--command-capf nil t)
   (add-hook 'completion-at-point-functions #'pilish--file-reference-capf nil t)
   (add-hook 'completion-at-point-functions #'pilish--path-capf nil t)
+  ;; Company should use only Pilish's own CAPFs, with Emacs's flex style
+  ;; allowing fuzzy subsequence matches for commands, files, and paths.
+  (setq-local company-backends '(company-capf))
+  (setq-local completion-styles '(flex))
+  (company-mode 1)
   (add-hook 'post-self-insert-hook #'pilish--maybe-complete-at nil t)
   (add-hook 'isearch-mode-hook #'pilish--history-isearch-setup nil t)
   (add-hook 'kill-buffer-query-functions
@@ -649,6 +657,53 @@ sending a model command selects it without another prompt."
           (lambda (label) (string-prefix-p prefix label t))
           labels))))
 
+(defun pilish--slash-command-trigger-p ()
+  "Return non-nil when / was just typed as the first input character."
+  (and (eq (char-before (point)) ?/)
+       (= (point) (1+ (point-min)))
+       (= (line-beginning-position) (point-min))))
+
+(defun pilish--slash-argument-trigger-p ()
+  "Return non-nil when SPC just completed a command with known arguments."
+  (and (eq (char-before (point)) ?\s)
+       (> (point) (+ 2 (point-min)))
+       (eq (char-after (point-min)) ?/)
+       (let ((text (buffer-substring (1+ (point-min)) (1- (point)))))
+         (and (string-match-p "\\`[^ \t]+\\'" text)
+              (assoc text pilish-command-argument-completions)
+              t))))
+
+;;;; In-Buffer Completion Front Ends
+
+(defun pilish--true-bound-p (variable)
+  "Return VARIABLE's value when it is bound and non-nil."
+  (and (boundp variable) (symbol-value variable)))
+
+(defun pilish--in-buffer-completion-active-p ()
+  "Return non-nil when an in-buffer completion front-end is available."
+  (let ((default-completion (default-value 'completion-in-region-function)))
+    (or (pilish--true-bound-p 'company-mode)
+        (pilish--true-bound-p 'corfu-mode)
+        (not (eq completion-in-region-function default-completion)))))
+
+(defun pilish--run-in-buffer-completion ()
+  "Start completion at point with the active in-buffer front-end.
+company-mode gets `company-complete'; other front-ends use
+`completion-at-point'.  Return non-nil when a front-end is active."
+  (cond
+   ((pilish--true-bound-p 'company-mode)
+    (when (fboundp 'company-complete)
+      (funcall (indirect-function 'company-complete)))
+    t)
+   ((pilish--in-buffer-completion-active-p)
+    (completion-at-point)
+    t)
+   (t nil)))
+
+(defun pilish--schedule-in-buffer-completion ()
+  "Schedule in-buffer completion after the current command."
+  (run-at-time 0 nil #'pilish--run-in-buffer-completion))
+
 ;;;; Editor Features: File Reference (@)
 
 (defun pilish--at-trigger-p ()
@@ -661,19 +716,27 @@ Assumes point is right after the @."
         (looking-at-p "[^[:alnum:]]"))))
 
 (defun pilish--maybe-complete-at ()
-  "Trigger completion after @ if at word boundary.
-Called from `post-self-insert-hook'.
-Does not trigger when @ follows alphanumeric (e.g., in email addresses)."
-  (when (and (eq last-command-event ?@)
-             (pilish--at-trigger-p))
-    (run-at-time 0 nil #'pilish--complete-file-reference)))
+  "Trigger in-buffer completion for slash commands and file references.
+Runs after / at the start of input, after @ at a word boundary, and after
+the space following a command with known argument values.  File references
+fall back to the minibuffer if no in-buffer front-end is active."
+  (let ((event last-command-event))
+    (cond
+     ((and (eq event ?@) (pilish--at-trigger-p))
+      (run-at-time 0 nil #'pilish--complete-file-reference))
+     ((and (eq event ?/) (pilish--slash-command-trigger-p))
+      (pilish--schedule-in-buffer-completion))
+     ((and (eq event ?\s) (pilish--slash-argument-trigger-p))
+      (pilish--schedule-in-buffer-completion)))))
 
 (defun pilish--complete-file-reference ()
-  "Complete file reference after @."
-  (let* ((files (pilish--get-project-files))
-         (choice (completing-read "File: " files nil nil)))
-    (when (and choice (not (string-empty-p choice)))
-      (insert choice))))
+  "Complete file reference after @, preferring an in-buffer front-end."
+  (if (pilish--run-in-buffer-completion)
+      nil
+    (let* ((files (pilish--get-project-files))
+           (choice (completing-read "File: " files nil nil)))
+      (when (and choice (not (string-empty-p choice)))
+        (insert choice)))))
 
 (defvar-local pilish--project-files-cache nil
   "Cached list of project files for @ completion.")
