@@ -3285,10 +3285,25 @@ only offer our own capfs (slash commands, file references, paths)."
     (insert "/compact ")
     (should-not (pilish--slash-argument-trigger-p))))
 
-(ert-deftest pilish-test-in-buffer-completion-front-end-detection ()
-  "Front-end detection is nil in a plain buffer without company or corfu."
+(ert-deftest pilish-test-input-mode-enables-company-with-fuzzy-matching ()
+  "Input mode enables Company with fuzzy matching over Pilish candidates."
   (with-temp-buffer
     (pilish-input-mode)
+    (should (bound-and-true-p company-mode))
+    (should (equal company-backends '(company-capf)))
+    (should (equal completion-styles '(flex)))
+    (insert "/cpt")
+    (let* ((capf (pilish--command-capf))
+           (candidates (completion-all-completions
+                        "cpt" (nth 2 capf) nil 3)))
+      (should (member "compact"
+                      (mapcar #'substring-no-properties candidates))))))
+
+(ert-deftest pilish-test-in-buffer-completion-front-end-detection ()
+  "Front-end detection is nil after disabling Company and without Corfu."
+  (with-temp-buffer
+    (pilish-input-mode)
+    (company-mode -1)
     (should-not (pilish--in-buffer-completion-active-p))
     (should-not (pilish--run-in-buffer-completion))))
 

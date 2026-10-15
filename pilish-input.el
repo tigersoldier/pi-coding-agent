@@ -28,9 +28,10 @@
 ;; Input buffer features for Pilish: prompt composition,
 ;; history navigation (comint/eshell-style M-p/M-n), incremental
 ;; history search (readline-style C-r), file reference completion (@),
-;; path completion (Tab), slash-command and argument completion, in-buffer
-;; auto completion through company-mode/corfu, message queuing (follow-up
-;; and steering), and send/abort commands.
+;; path completion (Tab), slash-command and argument completion, and fuzzy
+;; in-buffer completion through company-mode (enabled by default; Corfu can
+;; also be used), message queuing (follow-up and steering), and send/abort
+;; commands.
 ;;
 ;; Key entry points:
 ;;   `pilish-send'                  Send prompt (C-c C-c)
@@ -48,8 +49,7 @@
 
 (require 'pilish-render)
 (require 'ring)
-
-(declare-function company-complete "company")
+(require 'company)
 
 ;;;; Input History (comint/eshell style)
 
@@ -264,6 +264,11 @@ markup visibility, mode identity, and keybindings.  Set
   (add-hook 'completion-at-point-functions #'pilish--command-capf nil t)
   (add-hook 'completion-at-point-functions #'pilish--file-reference-capf nil t)
   (add-hook 'completion-at-point-functions #'pilish--path-capf nil t)
+  ;; Company should use only Pilish's own CAPFs, with Emacs's flex style
+  ;; allowing fuzzy subsequence matches for commands, files, and paths.
+  (setq-local company-backends '(company-capf))
+  (setq-local completion-styles '(flex))
+  (company-mode 1)
   (add-hook 'post-self-insert-hook #'pilish--maybe-complete-at nil t)
   (add-hook 'isearch-mode-hook #'pilish--history-isearch-setup nil t)
   (add-hook 'kill-buffer-query-functions
